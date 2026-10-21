@@ -214,6 +214,36 @@
 		history: []
 	})
 	let taskQueueCtx: TaskQueueCtx = $state({ tasks: [] })
+	let chatActivityCtx: ChatActivityCtx = $state({
+		generatingMessages: {},
+		unread: {}
+	})
+
+	// A chat is marked unread only when one of its messages goes from
+	// generating to done, so plain edits/hides don't flag it.
+	function handleChatActivityMessage(msg: Sockets.ChatMessage.Response) {
+		const m = msg.chatMessage
+		if (!m?.id || !m.chatId) return
+		if (m.isGenerating) {
+			chatActivityCtx.generatingMessages[m.id] = m.chatId
+			return
+		}
+		if (!(m.id in chatActivityCtx.generatingMessages)) return
+		delete chatActivityCtx.generatingMessages[m.id]
+		if (m.chatId !== openChatCtx.chatId && m.content?.trim()) {
+			chatActivityCtx.unread[m.chatId] = true
+		}
+	}
+
+	// Opening a chat marks its replies as read.
+	$effect(() => {
+		const id = openChatCtx.chatId
+		if (id !== null) delete chatActivityCtx.unread[id]
+	})
+
+	function handleChatActivityDelete(msg: Sockets.ChatMessages.Delete.Response) {
+		if (msg.success) delete chatActivityCtx.generatingMessages[msg.id]
+	}
 	let openChatCtx: OpenChatCtx = $state({
 		chatId: null,
 		lorebookId: null,
@@ -588,6 +618,7 @@
 		setContext("userSettingsCtx", userSettingsCtx)
 		setContext("vectorizationCtx", vectorizationCtx)
 		setContext("taskQueueCtx", taskQueueCtx)
+		setContext("chatActivityCtx", chatActivityCtx)
 		setContext("openChatCtx", openChatCtx)
 		setContext("graphBuildsCtx", graphBuildsCtx)
 		setContext("sceneSummarizesCtx", sceneSummarizesCtx)
@@ -687,6 +718,9 @@
 		socket.on("taskQueue:update", (message) => {
 			taskQueueCtx.tasks = message.tasks ?? []
 		})
+
+		socket.on("chatMessage", handleChatActivityMessage)
+		socket.on("chatMessages:delete", handleChatActivityDelete)
 
 		socket.on("activity:update", (data) => {
 			const activities = data.activities ?? []
@@ -888,6 +922,8 @@
 		socket.off("success")
 		socket.off("vectorization:progress")
 		socket.off("activity:update")
+		socket.off("chatMessage", handleChatActivityMessage)
+		socket.off("chatMessages:delete", handleChatActivityDelete)
 		socket.off("narrativeGraph:buildLog")
 		socket.off("customThemes:list")
 		socket.off("customThemes:getCss")

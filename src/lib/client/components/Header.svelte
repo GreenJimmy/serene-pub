@@ -15,6 +15,16 @@
 		getContext("compileEntriesCtx")
 	)
 	let userCtx: UserCtx = $state(getContext("userCtx"))
+	let chatActivityCtx: ChatActivityCtx = $state(getContext("chatActivityCtx"))
+
+	// Chats icon badge: green with the unread count when replies are waiting,
+	// otherwise yellow with the number of chats currently generating.
+	let unreadChatCount = $derived(
+		Object.keys(chatActivityCtx?.unread ?? {}).length
+	)
+	let generatingChatCount = $derived(
+		new Set(Object.values(chatActivityCtx?.generatingMessages ?? {})).size
+	)
 
 	let reviewCount = $derived(
 		(graphBuildsCtx?.activeBuild?.status === "review" ||
@@ -163,6 +173,15 @@
 								{activityBadgeCount > 9
 									? "9+"
 									: activityBadgeCount}
+							</span>
+						{:else if key === "chats" && (unreadChatCount > 0 || generatingChatCount > 0)}
+							{@const count = unreadChatCount || generatingChatCount}
+							<span
+								class="{unreadChatCount > 0
+									? 'bg-success-500'
+									: 'bg-warning-500'} absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-bold text-white"
+							>
+								{count > 9 ? "9+" : count}
 							</span>
 						{/if}
 					</button>

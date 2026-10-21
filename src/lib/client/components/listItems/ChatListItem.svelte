@@ -3,6 +3,7 @@
 	import * as Icons from "@lucide/svelte"
 	import Avatar from "../Avatar.svelte"
 	import SidebarListItem from "../SidebarListItem.svelte"
+	import { getContext } from "svelte"
 
 	interface Props {
 		chat: Sockets.Chats.List.Response["chatList"][0]
@@ -34,6 +35,19 @@
 			data: cp.persona
 		}))
 	])
+
+	const chatActivityCtx: ChatActivityCtx | undefined =
+		getContext("chatActivityCtx")
+
+	const activity = $derived.by((): "generating" | "unread" | null => {
+		if (!chatActivityCtx || chat.id == null) return null
+		if (
+			Object.values(chatActivityCtx.generatingMessages).includes(chat.id)
+		)
+			return "generating"
+		if (chatActivityCtx.unread[chat.id]) return "unread"
+		return null
+	})
 
 	let menuOpen = $state(false)
 
@@ -79,8 +93,25 @@
 			</div>
 		</div>
 		<div class="flex min-w-0 flex-col">
-			<div class="truncate text-left font-semibold">
-				{chat.name || "Untitled Chat"}
+			<div class="flex min-w-0 items-center gap-2">
+				<div class="truncate text-left font-semibold">
+					{chat.name || "Untitled Chat"}
+				</div>
+				{#if activity === "generating"}
+					<span
+						class="badge preset-filled-warning-500 shrink-0 px-2 py-0.5 text-xs"
+						title="A reply is queued or being written"
+					>
+						Writing…
+					</span>
+				{:else if activity === "unread"}
+					<span
+						class="badge preset-filled-success-500 shrink-0 px-2 py-0.5 text-xs"
+						title="New reply you haven't read yet"
+					>
+						New
+					</span>
+				{/if}
 			</div>
 			<div class="text-muted-foreground line-clamp-2 text-left text-xs">
 				{#if chat.chatCharacters?.length}
