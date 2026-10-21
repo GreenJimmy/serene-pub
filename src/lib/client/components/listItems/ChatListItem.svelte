@@ -39,15 +39,18 @@
 	const chatActivityCtx: ChatActivityCtx | undefined =
 		getContext("chatActivityCtx")
 
-	const activity = $derived.by((): "generating" | "unread" | null => {
-		if (!chatActivityCtx || chat.id == null) return null
-		if (
-			Object.values(chatActivityCtx.generatingMessages).includes(chat.id)
-		)
-			return "generating"
-		if (chatActivityCtx.unread[chat.id]) return "unread"
-		return null
-	})
+	const activity = $derived.by(
+		(): "generating" | "queued" | "unread" | null => {
+			if (!chatActivityCtx || chat.id == null) return null
+			const pending = Object.values(
+				chatActivityCtx.generatingMessages
+			).filter((g) => g.chatId === chat.id)
+			if (pending.some((g) => !g.queued)) return "generating"
+			if (pending.length) return "queued"
+			if (chatActivityCtx.unread[chat.id]) return "unread"
+			return null
+		}
+	)
 
 	let menuOpen = $state(false)
 
@@ -103,6 +106,13 @@
 						title="A reply is queued or being written"
 					>
 						Writing…
+					</span>
+				{:else if activity === "queued"}
+					<span
+						class="badge preset-filled-error-500 shrink-0 px-2 py-0.5 text-xs"
+						title="A reply is waiting in the queue"
+					>
+						Queued
 					</span>
 				{:else if activity === "unread"}
 					<span
