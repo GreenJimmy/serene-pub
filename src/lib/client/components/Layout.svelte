@@ -225,7 +225,10 @@
 		const m = msg.chatMessage
 		if (!m?.id || !m.chatId) return
 		if (m.isGenerating) {
-			chatActivityCtx.generatingMessages[m.id] = m.chatId
+			chatActivityCtx.generatingMessages[m.id] = {
+				chatId: m.chatId,
+				queued: m.generationStage === "queued"
+			}
 			return
 		}
 		if (!(m.id in chatActivityCtx.generatingMessages)) return

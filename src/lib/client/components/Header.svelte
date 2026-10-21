@@ -17,13 +17,21 @@
 	let userCtx: UserCtx = $state(getContext("userCtx"))
 	let chatActivityCtx: ChatActivityCtx = $state(getContext("chatActivityCtx"))
 
-	// Chats icon badge: green with the unread count when replies are waiting,
-	// otherwise yellow with the number of chats currently generating.
+	// Chats icon badge, by priority: green with the unread count, yellow with
+	// the number of chats generating, or red with the number only queued.
 	let unreadChatCount = $derived(
 		Object.keys(chatActivityCtx?.unread ?? {}).length
 	)
+	let pendingMessages = $derived(
+		Object.values(chatActivityCtx?.generatingMessages ?? {})
+	)
 	let generatingChatCount = $derived(
-		new Set(Object.values(chatActivityCtx?.generatingMessages ?? {})).size
+		new Set(pendingMessages.filter((g) => !g.queued).map((g) => g.chatId))
+			.size
+	)
+	let queuedChatCount = $derived(
+		new Set(pendingMessages.map((g) => g.chatId)).size -
+			generatingChatCount
 	)
 
 	let reviewCount = $derived(
@@ -174,12 +182,17 @@
 									? "9+"
 									: activityBadgeCount}
 							</span>
-						{:else if key === "chats" && (unreadChatCount > 0 || generatingChatCount > 0)}
-							{@const count = unreadChatCount || generatingChatCount}
+						{:else if key === "chats" && (unreadChatCount > 0 || generatingChatCount > 0 || queuedChatCount > 0)}
+							{@const count =
+								unreadChatCount ||
+								generatingChatCount ||
+								queuedChatCount}
 							<span
 								class="{unreadChatCount > 0
 									? 'bg-success-500'
-									: 'bg-warning-500'} absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-bold text-white"
+									: generatingChatCount > 0
+										? 'bg-warning-500'
+										: 'bg-error-500'} absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-bold text-white"
 							>
 								{count > 9 ? "9+" : count}
 							</span>

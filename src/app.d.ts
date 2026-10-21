@@ -160,8 +160,8 @@ declare global {
 	// Per-chat generation status for the chats sidebar badges, fed by the
 	// global "chatMessage" broadcast in Layout.svelte.
 	interface ChatActivityCtx {
-		// messageId -> chatId for messages currently queued or generating
-		generatingMessages: Record<number, number>
+		// Messages currently queued or generating, keyed by message id
+		generatingMessages: Record<number, { chatId: number; queued: boolean }>
 		// chatIds with a finished reply the user hasn't opened yet
 		unread: Record<number, true>
 	}
