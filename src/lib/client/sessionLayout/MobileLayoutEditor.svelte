@@ -47,7 +47,7 @@
 	import type { SimTier } from "./simulator"
 	// A widget's settings and style open in the one app-level modal — the same
 	// one the desktop editor's gear opens, a full-screen sheet at this width.
-	import { openWidgetSettings } from "./widgetSettingsModal.svelte"
+	import { openWidgetSettings } from "./widgetSettingsState.svelte"
 	// The layouts sheet says what the desktop's Layouts tab says: the same
 	// sections, source lines, status line, Updated offer, questions and card menu.
 	import LayoutConfirmDialog from "./LayoutConfirmDialog.svelte"
