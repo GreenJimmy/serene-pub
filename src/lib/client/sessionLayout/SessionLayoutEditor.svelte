@@ -28,7 +28,7 @@
 	import { dropWidgetSettings } from "$lib/client/stores/widgetSettings.svelte"
 	import { CORE_WIDGETS } from "$lib/shared/widgets/types"
 	import { type PanelLayoutV1, type SessionLayoutV1, widgetOfInstance } from "@serene-pub/sdk"
-	import { closeWidgetSettings, openWidgetSettings } from "./widgetSettingsModal.svelte"
+	import { closeWidgetSettings, openWidgetSettings } from "./widgetSettingsState.svelte"
 	import MobileLayoutEditor from "./MobileLayoutEditor.svelte"
 	import LayoutEditorToolbar from "./LayoutEditorToolbar.svelte"
 	import ArrangeCanvas from "./ArrangeCanvas.svelte"

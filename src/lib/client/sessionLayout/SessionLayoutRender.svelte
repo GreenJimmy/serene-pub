@@ -43,7 +43,7 @@
 	import type { SurfaceManager } from "$lib/client/surfaces/panelManager.svelte"
 	import type { DrawnInstance, DrawnPanel } from "@serene-pub/sdk"
 	import PanelTabs from "./PanelTabs.svelte"
-	import { openWidgetSettings } from "./widgetSettingsModal.svelte"
+	import { openWidgetSettings } from "./widgetSettingsState.svelte"
 	import { createStageBalance } from "./stageBalance.svelte"
 	import { HOST_CARD_CLASS, hostCardShown } from "./hostCard"
 	import { mobileSidePanels } from "./mobileSidePanels.svelte"
