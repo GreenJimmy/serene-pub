@@ -7,7 +7,17 @@
 	import { renderMarkdownWithQuotedText } from "$lib/client/utils/markdownToHTML"
 	import EmbeddingStatusIcon from "$lib/client/components/EmbeddingStatusIcon.svelte"
 	import { resolveCharacterName } from "$lib/shared/utils/resolveCharacterName"
-	import { animateHeight } from "$lib/client/utils/motion"
+	import {
+		animateHeight,
+		prefersReducedMotion
+	} from "$lib/client/utils/motion"
+	import {
+		speech,
+		speakerKey,
+		isSpeechSupported
+	} from "$lib/client/utils/speech.svelte"
+	import VoiceSettingsModal from "$lib/client/components/modals/VoiceSettingsModal.svelte"
+	import { onMount } from "svelte"
 
 	interface Props {
 		msg: SelectChatMessage
@@ -189,6 +199,49 @@
 		isNarratorInstructionsExpanded = !isNarratorInstructionsExpanded
 	}
 
+	// --- Read aloud ---
+	// Only known after mount: there's no speechSynthesis during SSR.
+	let canSpeak = $state(false)
+	onMount(() => {
+		canSpeak = isSpeechSupported()
+		if (canSpeak) speech.init()
+	})
+	const msgSpeaker = $derived(speakerKey(msg))
+	const isSpeaking = $derived(speech.playingId === msg.id)
+	const canReadAloud = $derived(
+		canSpeak && !msg.isGenerating && !!msg.content.trim() && !isEditing
+	)
+	let voiceSettingsOpen = $state(false)
+
+	// Stop reading if this message starts regenerating or is opened for edit.
+	$effect(() => {
+		if (isSpeaking && (msg.isGenerating || isEditing)) speech.stop()
+	})
+
+	// --- Jump to the start of this message ---
+	// Scrolls only the chat's own scroller (#chat-history), not the page,
+	// so the header and composer stay put.
+	function scrollToMessageStart() {
+		const el = document.getElementById(`message-${msg.id}`)
+		const container = document.getElementById("chat-history")
+		if (!el) return
+		if (container) {
+			const top =
+				container.scrollTop +
+				el.getBoundingClientRect().top -
+				container.getBoundingClientRect().top -
+				8
+			container.scrollTo({
+				top,
+				behavior: prefersReducedMotion() ? "auto" : "smooth"
+			})
+		} else {
+			el.scrollIntoView({ block: "start" })
+		}
+		// Move keyboard/screen-reader focus to the message as well.
+		el.focus({ preventScroll: true })
+	}
+
 	// The rendered content below is raw injected HTML ({@html}), so inline
 	// `![alt](url)` images can't get their own Svelte click handler —
 	// delegate from the container instead.
@@ -346,6 +399,26 @@
 		{:else}
 			<div class="msg-ctrl-col">
 				<div class="msg-ctrl-row flex-wrap justify-end gap-2">
+					{#if canReadAloud || isSpeaking}
+						<button
+							class="btn msg-ctrl-btn {isSpeaking
+								? 'preset-filled-primary-500'
+								: 'hover:bg-primary-600-400'}"
+							title={isSpeaking ? "Stop reading" : "Read aloud"}
+							aria-label={isSpeaking
+								? "Stop reading this message"
+								: "Read this message aloud"}
+							aria-pressed={isSpeaking}
+							onclick={() =>
+								speech.toggle(msg.id, msg.content, msgSpeaker)}
+						>
+							{#if isSpeaking}
+								<Icons.Square aria-hidden="true" />
+							{:else}
+								<Icons.Play aria-hidden="true" />
+							{/if}
+						</button>
+					{/if}
 					{#if messageControls}
 						{@render messageControls(msg)}
 					{:else}
@@ -364,6 +437,9 @@
 							{onAbortMessage}
 							{onBranchMessage}
 							{onStartSummarization}
+							onVoiceSettings={canSpeak && !msg.isGenerating
+								? () => (voiceSettingsOpen = true)
+								: undefined}
 							open={openMsgControlsMenu === msg.id}
 							onOpenChange={(isOpen) =>
 								(openMsgControlsMenu = isOpen
@@ -647,7 +723,29 @@
 			{/if}
 		</div>
 	</div>
+	{#if !isEditing && !(msg.isGenerating && !msg.content)}
+		<div class="flex justify-end px-1">
+			<button
+				class="btn msg-ctrl-btn opacity-50 transition-opacity hover:opacity-100 focus-visible:opacity-100"
+				title="Jump to start of message"
+				aria-label="Scroll back to the start of this message"
+				onclick={scrollToMessageStart}
+			>
+				<Icons.ArrowUpToLine aria-hidden="true" />
+			</button>
+		</div>
+	{/if}
 </div>
+
+{#if voiceSettingsOpen}
+	<VoiceSettingsModal
+		open={voiceSettingsOpen}
+		onOpenChange={(e) => (voiceSettingsOpen = e.open)}
+		speaker={msgSpeaker}
+		speakerName={speakerDisplayName ??
+			resolveCharacterName(character, "This character")}
+	/>
+{/if}
 
 <style lang="postcss">
 	@reference "tailwindcss";

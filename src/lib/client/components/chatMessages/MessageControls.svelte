@@ -22,6 +22,8 @@
 		onBranchMessage?: (e: Event, msg: SelectChatMessage) => void
 		onContinueMessage?: (e: Event, msg: SelectChatMessage) => void
 		onStartSummarization?: (msg: SelectChatMessage) => void
+		// Opens the read-aloud voice picker for this message's speaker.
+		onVoiceSettings?: () => void
 		debugMeta?: Record<string, any> | null
 		onShowDebugMeta?: (meta: Record<string, any>) => void
 		// The "more actions" popover is opened/closed by the parent list so
@@ -46,6 +48,7 @@
 		onBranchMessage,
 		onContinueMessage,
 		onStartSummarization,
+		onVoiceSettings,
 		debugMeta = null,
 		onShowDebugMeta = undefined,
 		open,
@@ -175,6 +178,20 @@
 									aria-hidden="true"
 								/>
 								<span>Select for Summarization</span>
+							</button>
+						{/if}
+						{#if onVoiceSettings}
+							<button
+								class="btn btn-sm popover-menu-btn hover:preset-filled-primary-500"
+								title="Voice Settings"
+								aria-label="Choose the read-aloud voice for this speaker"
+								onclick={() => {
+									closeMenu()
+									onVoiceSettings!()
+								}}
+							>
+								<Icons.AudioLines size={16} aria-hidden="true" />
+								<span>Voice Settings</span>
 							</button>
 						{/if}
 						{#if onShowDebugMeta && debugMeta && !msg.isGenerating}
