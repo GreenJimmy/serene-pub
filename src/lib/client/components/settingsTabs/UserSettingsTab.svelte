@@ -34,6 +34,7 @@
 	import { docsHref } from "$lib/shared/utils/docsHref"
 	import { languageDefinition } from "$lib/shared/i18n/languages"
 	import LoreWriteModePicker from "$lib/client/components/inputs/LoreWriteModePicker.svelte"
+	import ReadAloudSettings from "./ReadAloudSettings.svelte"
 	import {
 		LORE_WRITE_MODE_CHOICES,
 		effectiveLoreWriteMode,
@@ -527,6 +528,8 @@
 			({displayTimeZone()})
 		</p>
 	</div>
+
+	<ReadAloudSettings />
 
 	<!-- Lorebook writes from sessions (plan A22) -->
 	<div class="card preset-filled-surface-100-900 p-4">

@@ -53,6 +53,13 @@ sp-avatar {
 sp-message-body {
 	display: block;
 }
+/* The toggle is the element's only box; a widget styles it through its part. */
+sp-read-aloud {
+	display: contents;
+}
+.sp-read-aloud-button[aria-pressed="true"] {
+	color: var(--color-primary-600-400);
+}
 /* The picker is its body's control; it takes no box of its own. */
 sp-file-picker {
 	display: contents;

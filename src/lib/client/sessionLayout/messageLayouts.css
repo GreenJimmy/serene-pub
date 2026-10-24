@@ -297,8 +297,9 @@ button[data-widget-part~="messages.message-name"]:hover {
 }
 
 /* One box for every icon control on the row: the swipe arrows, the quick
-   actions and the ⋮ trigger. */
-[data-widget-part~="messages.message-icon-button"] {
+   actions, read aloud and the ⋮ trigger. */
+[data-widget-part~="messages.message-icon-button"],
+[data-widget-part~="messages.message-read-aloud"] .sp-read-aloud-button {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
@@ -312,14 +313,17 @@ button[data-widget-part~="messages.message-name"]:hover {
 	cursor: pointer;
 	color: var(--color-surface-600);
 }
-[data-mode="dark"] [data-widget-part~="messages.message-icon-button"] {
+[data-mode="dark"] [data-widget-part~="messages.message-icon-button"],
+[data-mode="dark"] [data-widget-part~="messages.message-read-aloud"] .sp-read-aloud-button {
 	color: var(--color-surface-400);
 }
-[data-widget-part~="messages.message-icon-button"]:hover:not(:disabled) {
+[data-widget-part~="messages.message-icon-button"]:hover:not(:disabled),
+[data-widget-part~="messages.message-read-aloud"] .sp-read-aloud-button:hover:not(:disabled) {
 	background: var(--color-surface-200);
 	color: var(--color-surface-900);
 }
-[data-mode="dark"] [data-widget-part~="messages.message-icon-button"]:hover:not(:disabled) {
+[data-mode="dark"] [data-widget-part~="messages.message-icon-button"]:hover:not(:disabled),
+[data-mode="dark"] [data-widget-part~="messages.message-read-aloud"] .sp-read-aloud-button:hover:not(:disabled) {
 	background: var(--color-surface-800);
 	color: var(--color-surface-100);
 }
@@ -332,20 +336,35 @@ button[data-widget-part~="messages.message-name"]:hover {
 	background: var(--color-surface-800);
 	color: var(--color-surface-100);
 }
-[data-widget-part~="messages.message-icon-button"]:disabled {
+[data-widget-part~="messages.message-icon-button"]:disabled,
+[data-widget-part~="messages.message-read-aloud"] .sp-read-aloud-button:disabled {
 	opacity: 0.35;
 	cursor: not-allowed;
 }
 /* A 28px control gets a 44px target where a finger can land. */
 @media (pointer: coarse) {
-	[data-widget-part~="messages.message-icon-button"] {
+	[data-widget-part~="messages.message-icon-button"],
+	[data-widget-part~="messages.message-read-aloud"] .sp-read-aloud-button {
 		position: relative;
 	}
-	[data-widget-part~="messages.message-icon-button"]::after {
+	[data-widget-part~="messages.message-icon-button"]::after,
+	[data-widget-part~="messages.message-read-aloud"] .sp-read-aloud-button::after {
 		content: "";
 		position: absolute;
 		inset: -0.5rem;
 	}
+}
+
+/* Back to the start of a line: at the content's foot, on its trailing edge,
+   faint until it is wanted. */
+[data-widget-part~="messages.message-jump"] {
+	display: flex;
+	margin-inline-start: auto;
+	opacity: 0.5;
+	transition: opacity 150ms ease;
+}
+[data-widget-part~="messages.message-jump"]:is(:hover, :focus-visible) {
+	opacity: 1;
 }
 
 /* Quiet text action (Cancel, beside Save). */

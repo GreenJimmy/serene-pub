@@ -30,6 +30,7 @@ import SpMenu from "./SpMenu.svelte"
 import SpMessageBody from "./SpMessageBody.svelte"
 import SpPopover from "./SpPopover.svelte"
 import SpProgress from "./SpProgress.svelte"
+import SpReadAloud from "./SpReadAloud.svelte"
 import SpScroll from "./SpScroll.svelte"
 import SpSlider from "./SpSlider.svelte"
 import SpSwitch from "./SpSwitch.svelte"
@@ -58,6 +59,7 @@ export const SP_ELEMENTS: Record<string, SpElementDef> = {
 	"sp-combobox": { component: SpCombobox, dataChildren: ["sp-option"] },
 	"sp-option": { component: SpData },
 	"sp-message-body": { component: SpMessageBody },
+	"sp-read-aloud": { component: SpReadAloud },
 	"sp-composer-field": { component: SpComposerField },
 	"sp-scroll": { component: SpScroll },
 	"sp-file-picker": { component: SpFilePicker },
