@@ -2,10 +2,17 @@ import { marked } from "marked"
 import DOMPurify from "dompurify"
 import { hostAttributeValueFinding } from "@serene-pub/sdk"
 
-// Fix italic formatting to handle trailing spaces before closing asterisk
-function fixItalicSpaces(text: string): string {
-	// Replace patterns like "*text *" with "*text*" to fix italic parsing
-	return text.replace(/\*([^*\n]+?)\s+\*/g, "*$1*")
+/**
+ * `*text *` as `*text*`, so the span still parses as italics. The opening `*`
+ * may not follow a word character and the closing `*` may not precede one,
+ * so one span's closing `*` is never paired with the next span's opening
+ * `*` (which would eat the space between them: `*a*, and *b*`).
+ */
+export function fixItalicSpaces(text: string): string {
+	return text.replace(
+		/(^|[^\w*])\*(?=[^\s*])([^*\n]*?[^\s*])\s+\*(?![\w*])/gm,
+		"$1*$2*"
+	)
 }
 
 export function markQuotedText(md: string): string {
