@@ -29,8 +29,20 @@ RUN npm install --no-audit --no-fund --fetch-retries=5 --fetch-retry-mintimeout=
 # this with .github/actions/sdk-docs. It is read here and never reaches the
 # runtime stage.
 COPY . .
+# A BUILT checkout there (its packages' dist/, as this fork's workflow makes;
+# see fork/README.md) is linked in place of the npm copies for the build, then
+# copied over the links so the runtime stage, which has no checkout, gets the
+# real packages. A guides-only checkout (docker.yml's) is left as docs content.
+RUN if [ -d .serene-pub-sdk/sdk/dist ]; then \
+        SERENE_PUB_SDK_DIR=/app/.serene-pub-sdk node scripts/sdk-link.mjs; \
+    fi
 RUN if [ -d .serene-pub-sdk ]; then export SERENE_PUB_SDK_DIR=/app/.serene-pub-sdk; fi \
     && NODE_OPTIONS=--max-old-space-size=8192 npm run build
+RUN for link in node_modules/@serene-pub/*; do \
+        if [ -L "$link" ]; then \
+            target=$(readlink -f "$link"); rm "$link"; cp -R "$target" "$link"; \
+        fi; \
+    done
 
 # Prune to production-only node_modules
 RUN npm prune --omit=dev

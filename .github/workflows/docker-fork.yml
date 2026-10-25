@@ -1,0 +1,67 @@
+name: Docker (fork)
+
+# Builds this fork's image on every push to main, without the release
+# workflows that version tags trigger.
+
+on:
+    push:
+        branches: [main]
+    workflow_dispatch:
+
+jobs:
+    build-and-push:
+        if: github.repository != 'doolijb/serene-pub'
+        runs-on: ubuntu-latest
+        timeout-minutes: 240
+        permissions:
+            contents: read
+            packages: write
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: "26"
+
+            # The SDK this fork needs (see fork/README.md): the pinned commit
+            # with the fork's patch, built here and placed as .serene-pub-sdk,
+            # which the Dockerfile links in. It also carries the guides the
+            # in-app docs compile.
+            - name: Build the fork's SDK
+              run: |
+                  set -euo pipefail
+                  SDK_COMMIT=$(cat fork/sdk-commit)
+                  git init -q .serene-pub-sdk
+                  git -C .serene-pub-sdk fetch -q --depth 1 https://github.com/SerenePub/serene-pub-sdk.git "$SDK_COMMIT"
+                  git -C .serene-pub-sdk checkout -q FETCH_HEAD
+                  git -C .serene-pub-sdk apply "$GITHUB_WORKSPACE/fork/sdk-read-aloud.patch"
+                  cd .serene-pub-sdk
+                  for i in 1 2 3; do npm install --no-audit --no-fund && break || sleep 15; done
+                  npm run build
+                  # The image resolves the SDK's dependencies from the app's own
+                  # node_modules; only the built packages travel.
+                  rm -rf .git node_modules */node_modules
+
+            - uses: docker/setup-qemu-action@v3
+            - uses: docker/setup-buildx-action@v3
+            - uses: docker/login-action@v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+            - id: meta
+              uses: docker/metadata-action@v5
+              with:
+                  images: ghcr.io/${{ github.repository }}
+                  tags: |
+                      type=raw,value=latest
+                      type=sha
+            - uses: docker/build-push-action@v6
+              with:
+                  context: .
+                  platforms: linux/amd64,linux/arm64
+                  push: true
+                  tags: ${{ steps.meta.outputs.tags }}
+                  labels: ${{ steps.meta.outputs.labels }}
+                  cache-from: type=gha
+                  cache-to: type=gha,mode=max
