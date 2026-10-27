@@ -66,6 +66,8 @@ const config = {
 				// same-origin server-side proxy) instead. All other CharaVault
 				// API traffic already happens server-side (fetch isn't subject
 				// to page CSP either way).
+				// blob: for read aloud's OpenVox audio, fetched then played.
+				"media-src": ["self", "blob:"],
 				"img-src": [
 					"self",
 					"data:",

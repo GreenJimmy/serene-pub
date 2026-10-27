@@ -42,10 +42,18 @@ beforeEach(() => {
 		cancel: vi.fn(),
 		addEventListener: vi.fn()
 	})
+	// No OpenVox unless a test offers it.
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async () => new Response(null, { status: 404 }))
+	)
 	vi.resetModules()
 })
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+	vi.unstubAllGlobals()
+	vi.restoreAllMocks()
+})
 
 async function fresh() {
 	const { readAloud } = await import("./speech.svelte")
@@ -155,5 +163,92 @@ describe("readAloud", () => {
 		for (let i = 0; i < 40; i++)
 			picks.add(r.voiceFor(`character:${i}`)?.name)
 		expect([...picks].sort()).toEqual(["Ava", "Evan", "Zoe"])
+	})
+})
+
+describe("readAloud with OpenVox", () => {
+	const openVoxVoices = [
+		{ id: "ava", name: "Ava", language: "English" },
+		{ id: "tom", name: "Tom", language: "English" },
+		{ id: "lea", name: "Léa", language: "French" }
+	]
+	let posted: { parts: { text: string; voice: string }[]; speed: number }[]
+	let played: string[]
+
+	beforeEach(() => {
+		posted = []
+		played = []
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string, init?: RequestInit) => {
+				if (url === "/api/read-aloud/voices")
+					return new Response(
+						JSON.stringify({ voices: openVoxVoices })
+					)
+				posted.push(JSON.parse(String(init?.body)))
+				return new Response(new Blob(["wav"]))
+			})
+		)
+		let n = 0
+		vi.spyOn(URL, "createObjectURL").mockImplementation(() => `blob:${++n}`)
+		vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {})
+		vi.stubGlobal(
+			"Audio",
+			class {
+				src = ""
+				onended: (() => void) | null = null
+				onerror: (() => void) | null = null
+				play() {
+					played.push(this.src)
+					return Promise.resolve()
+				}
+				pause() {}
+			}
+		)
+	})
+
+	async function withOpenVox() {
+		const r = await fresh()
+		await vi.waitFor(() => expect(r.openVoxVoices).toHaveLength(3))
+		return r
+	}
+
+	test("sends each segment in its voice, then plays what comes back", async () => {
+		const r = await withOpenVox()
+		expect(r.usingOpenVox).toBe(true)
+		r.setVoice("character:1", "ava")
+		r.save({ openVoxNarrator: "tom", rate: 1.2 })
+		const owner = Symbol()
+		r.play(owner, '*She smiles.* "Hello."', "character:1")
+		expect(r.loading).toBe(owner)
+		await vi.waitFor(() => expect(r.loading).toBe(null))
+		expect(posted).toEqual([
+			{
+				parts: [
+					{ text: "She smiles.", voice: "tom" },
+					{ text: '"Hello."', voice: "ava" }
+				],
+				speed: 1.2
+			}
+		])
+		// Silence first, to unlock audio during the tap; then the message.
+		expect(played).toEqual(["blob:1", "blob:2"])
+		expect(r.playing).toBe(owner)
+	})
+
+	test("picks an automatic voice in the viewer's language", async () => {
+		const r = await withOpenVox()
+		for (let i = 0; i < 20; i++)
+			expect(r.openVoxVoiceFor(`character:${i}`)?.language).toBe(
+				"English"
+			)
+	})
+
+	test("uses the browser's voices when chosen instead", async () => {
+		const r = await withOpenVox()
+		r.save({ engine: "browser" })
+		r.play(Symbol(), "Hi.", "character:1")
+		expect(posted).toEqual([])
+		expect(spoken.map((u) => u.text)).toEqual(["Hi."])
 	})
 })
