@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { adoptAccountTimeZone } from "$lib/client/utils/realTime.svelte"
 	import { provideCharacterImports } from "$lib/client/contexts/characterImports.svelte"
+	import { provideSessionOutcomes } from "$lib/client/contexts/sessionOutcomes.svelte"
 	import { provideConnections } from "$lib/client/contexts/connections.svelte"
 	import { provideConversations } from "$lib/client/contexts/conversations.svelte"
 	import ConnectionsDialogs from "$lib/client/components/connections/ConnectionsDialogs.svelte"
@@ -32,6 +33,7 @@
 		setLanguage
 	} from "$lib/client/i18n/state.svelte"
 	import { appVersion } from "$lib/shared/constants/version"
+	import { betaNoticeSentence } from "$lib/client/components/betaNotice"
 	import "./accessible.css"
 	import {
 		isDarkMode,
@@ -76,6 +78,8 @@
 	// The one subscriber to the card-import events; views take the outcome
 	// from this context (contexts/characterImports.svelte.ts).
 	provideCharacterImports()
+	// Share to ‹book› with nothing waiting, and Close out started: said once, here (contexts/sessionOutcomes.svelte.ts).
+	provideSessionOutcomes()
 	// The connections list and the one way to choose a model
 	// (contexts/connections.svelte.ts); its dialogs are mounted below.
 	provideConnections({ systemSettings: systemSettingsCtx })
@@ -422,20 +426,14 @@
 		<!-- The standard site marks a pre-release build with a faint,
 		     click-through watermark in the corner (PrereleaseWatermark.svelte),
 		     which is worth nothing here: it is aria-hidden by design, and low
-		     opacity is the opposite of what this shell is for. The same fact,
-		     as plain readable text, in the one region that renders on every
-		     Document View page. -->
-		{#if page.data?.isPrerelease}
-			<p>
-				Pre-release build {appVersion}. This is a preview, not a
-				production release — expect unfinished features and changes
-				between builds.
-			</p>
-		{/if}
+		     opacity is the opposite of what this shell is for. So the beta
+		     notice Home shows (★R4, 2026-10-24) is said here as plain text, in
+		     the one region that renders on every Document View page: the same
+		     single sentence, never two lines. -->
+		<p>{betaNoticeSentence(appVersion, !!page.data?.isPrerelease)}</p>
 		<p>
-			Serene Pub is in beta. Document View is a simplified, high-contrast,
-			keyboard- and screen-reader-friendly alternative to the standard
-			interface.
+			Document View is a simplified, high-contrast, keyboard- and
+			screen-reader-friendly alternative to the standard interface.
 		</p>
 	</footer>
 	<!-- The costed confirmations of choosing a model (re-embed, re-scan). -->

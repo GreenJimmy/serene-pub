@@ -71,6 +71,8 @@ const MIGRATED_FAMILIES = [
 	"bindingCheck:",
 	// slices 6+7 (2026-09-15): session-adjacent and admin/config.
 	"scenes:",
+	// 🚧 Admin › Rulesets (PLAN-ruleset-editor §5): client/admin/sections/rulesets/*.
+	"rulesets:",
 	"sessionGenres:",
 	"sessionPresets:",
 	"narrativeGraph:",
@@ -83,6 +85,10 @@ const MIGRATED_FAMILIES = [
 	// born after the sweep; its consumers (the admin components pages, and the
 	// session page for `components:changed`) are on the registry by construction.
 	"components:",
+	// 🚧 2026-10-21: starter lorebooks arrive gated — the family is born after the
+	// sweep; its consumers (New lorebook, the session start form, Admin ›
+	// Starter lorebooks — lane K2) declare interest by construction.
+	"starterKits:",
 	"users:",
 	"userSettings:",
 	"systemSettings:",
@@ -279,6 +285,28 @@ describe("scopeOfPayload", () => {
 		expect(scopeOfPayload("sessions:get", { session: { id: 42 } })).toBe(
 			"42"
 		)
+	})
+
+	test("🚧 reads sessions:refresh's scope off the session, as sessions:get's (pr-6)", () => {
+		expect(isGatedEvent("sessions:refresh")).toBe(true)
+		expect(scopeOfPayload("sessions:refresh", { session: { id: 42 } })).toBe("42")
+		expect(scopeOfPayload("sessions:refresh", { session: null, sessionId: 7 })).toBe("7")
+	})
+
+	test("🚧 gates B's pr-6 events; scopes sessions:genreOf by its sessionId, the rest stay bare", () => {
+		for (const event of [
+			"sessions:genreOf",
+			"sessions:shareAsLorebook",
+			"sessions:cloneWithChanges",
+			"sessions:archive",
+			"sessions:unarchive",
+			"sessions:closeOut",
+			"lorebooks:sessionNotes"
+		])
+			expect(isGatedEvent(event), event).toBe(true)
+		expect(scopeOfPayload("sessions:genreOf", { sessionId: 9, genre: null })).toBe("9")
+		expect(isScopedEvent("sessions:archive")).toBe(false)
+		expect(isScopedEvent("lorebooks:sessionNotes")).toBe(false)
 	})
 
 	test("falls through to sessionId on a not-found sessions:get reply", () => {

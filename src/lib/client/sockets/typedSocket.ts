@@ -180,6 +180,14 @@ export type SocketEventMap = {
 		params: Sockets.ErrorResponse
 		response: Sockets.ErrorResponse
 	}
+	"users:current:updateAvatar": {
+		params: Sockets.Users.UpdateAvatar.Params
+		response: Sockets.Users.UpdateAvatar.Response
+	}
+	"users:current:updateAvatar:error": {
+		params: Sockets.ErrorResponse
+		response: Sockets.ErrorResponse
+	}
 	"users:current:changePassphrase:error": {
 		params: Sockets.ErrorResponse
 		response: Sockets.ErrorResponse
@@ -1146,6 +1154,16 @@ export type SocketEventMap = {
 		params: Sockets.Sessions.Get.Params
 		response: Sockets.Sessions.Get.Response
 	}
+	// 🚧 pr-6: the member push, split from the paginated `sessions:get` reply.
+	"sessions:refresh": {
+		params: Sockets.Sessions.Refresh.Params
+		response: Sockets.Sessions.Refresh.Response
+	}
+	// 🚧 pr-6 (B §B-2): the session's ONE genre row (scoped on sessionId).
+	"sessions:genreOf": {
+		params: Sockets.Sessions.GenreOf.Params
+		response: Sockets.Sessions.GenreOf.Response
+	}
 	"sessions:genres": {
 		params: Sockets.Sessions.Genres.Params
 		response: Sockets.Sessions.Genres.Response
@@ -1157,6 +1175,42 @@ export type SocketEventMap = {
 	"sessions:setSessionPreset": {
 		params: Sockets.Sessions.SetSessionPreset.Params
 		response: Sockets.Sessions.SetSessionPreset.Response
+	}
+	"pipelines:registeredIn": {
+		params: Sockets.Pipelines.RegisteredIn.Params
+		response: Sockets.Pipelines.RegisteredIn.Response
+	}
+	"sessionPresets:editor": {
+		params: Sockets.SessionAdmin.PresetEditor.Params
+		response: Sockets.SessionAdmin.PresetEditor.Response
+	}
+	"sessionPresets:candidates": {
+		params: Sockets.SessionAdmin.RegistrationCandidates.Params
+		response: Sockets.SessionAdmin.RegistrationCandidates.Response
+	}
+	"sessions:conditionProps": {
+		params: Sockets.Sessions.ConditionProps.Params
+		response: Sockets.Sessions.ConditionProps.Response
+	}
+	"sessions:settingsForm": {
+		params: Sockets.Sessions.SettingsForm.Params
+		response: Sockets.Sessions.SettingsForm.Response
+	}
+	"sessions:updateSetting": {
+		params: Sockets.Sessions.UpdateSetting.Params
+		response: Sockets.Sessions.UpdateSetting.Response
+	}
+	"sessions:runRoutine": {
+		params: Sockets.Sessions.RunRoutine.Params
+		response: Sockets.Sessions.RunRoutine.Response
+	}
+	"sessions:routines": {
+		params: Sockets.Sessions.Routines.Params
+		response: Sockets.Sessions.Routines.Response
+	}
+	"sessions:routineLog": {
+		params: Sockets.Sessions.RoutineLog.Params
+		response: Sockets.Sessions.RoutineLog.Response
 	}
 	"sessions:presetStatus": {
 		params: Sockets.Sessions.PresetStatus.Params
@@ -1206,6 +1260,82 @@ export type SocketEventMap = {
 		params: never
 		response: Sockets.Sessions.LoreRanked.Push
 	}
+	"rulesets:list": {
+		params: Sockets.Rulesets.List.Params
+		response: Sockets.Rulesets.List.Response
+	}
+	"rulesets:detail": {
+		params: Sockets.Rulesets.Detail.Params
+		response: Sockets.Rulesets.Detail.Response
+	}
+	"rulesets:detail:error": {
+		params: never
+		response: Sockets.Rulesets.Detail.Response
+	}
+	"rulesets:create": {
+		params: Sockets.Rulesets.Create.Params
+		response: Sockets.Rulesets.Create.Response
+	}
+	"rulesets:create:error": {
+		params: never
+		response: Sockets.Rulesets.Create.Response
+	}
+	"rulesets:saveDraft": {
+		params: Sockets.Rulesets.SaveDraft.Params
+		response: Sockets.Rulesets.SaveDraft.Response
+	}
+	"rulesets:saveDraft:error": {
+		params: never
+		response: Sockets.Rulesets.SaveDraft.Response
+	}
+	"rulesets:publish": {
+		params: Sockets.Rulesets.Publish.Params
+		response: Sockets.Rulesets.Publish.Response
+	}
+	"rulesets:publish:error": {
+		params: never
+		response: Sockets.Rulesets.Publish.Response
+	}
+	"rulesets:retire": {
+		params: Sockets.Rulesets.Retire.Params
+		response: Sockets.Rulesets.Retire.Response
+	}
+	"rulesets:retire:error": {
+		params: never
+		response: Sockets.Rulesets.Retire.Response
+	}
+	"rulesets:delete": {
+		params: Sockets.Rulesets.Delete.Params
+		response: Sockets.Rulesets.Delete.Response
+	}
+	"rulesets:delete:error": {
+		params: never
+		response: Sockets.Rulesets.Delete.Response
+	}
+	"rulesets:scriptKey": {
+		params: Sockets.Rulesets.ScriptKey.Params
+		response: Sockets.Rulesets.ScriptKey.Response
+	}
+	"rulesets:scriptKey:error": {
+		params: never
+		response: Sockets.Rulesets.ScriptKey.Response
+	}
+	"rulesets:tryOut": {
+		params: Sockets.Rulesets.TryOut.Params
+		response: Sockets.Rulesets.TryOut.Response
+	}
+	"rulesets:tryOut:error": {
+		params: never
+		response: Sockets.Rulesets.TryOut.Response
+	}
+	"rulesets:askModel": {
+		params: Sockets.Rulesets.AskModel.Params
+		response: Sockets.Rulesets.AskModel.Response
+	}
+	"rulesets:askModel:error": {
+		params: never
+		response: Sockets.Rulesets.AskModel.Response
+	}
 	"sessionGenres:list": {
 		params: Sockets.SessionAdmin.Genres.Params
 		response: Sockets.SessionAdmin.Genres.Response
@@ -1245,10 +1375,6 @@ export type SocketEventMap = {
 	"sessionGenres:setSwapEnabled:error": {
 		params: never
 		response: Sockets.SessionAdmin.SetSwapEnabled.Response
-	}
-	"pipelines:configsIndex": {
-		params: Sockets.Pipelines.ConfigsIndex.Params
-		response: Sockets.Pipelines.ConfigsIndex.Response
 	}
 	"sessionPresets:list": {
 		params: Sockets.SessionAdmin.Presets.Params
@@ -1409,14 +1535,6 @@ export type SocketEventMap = {
 	"sessions:fireAction": {
 		params: Sockets.Sessions.FireAction.Params
 		response: Sockets.Sessions.FireAction.Response
-	}
-	"sessions:presets": {
-		params: Sockets.Sessions.PresetOptions.Params
-		response: Sockets.Sessions.PresetOptions.Response
-	}
-	"sessions:choosePreset": {
-		params: Sockets.Sessions.ChoosePreset.Params
-		response: Sockets.Sessions.ChoosePreset.Response
 	}
 	"sessions:functions": {
 		params: Sockets.Sessions.Functions.Params
@@ -1597,6 +1715,23 @@ export type SocketEventMap = {
 		params: never
 		response: Sockets.Sessions.FireTurn.Response
 	}
+	// 🚧 Back · Forward (RF fix 5): the session's forward stack.
+	"sessions:rewindTurn": {
+		params: Sockets.Sessions.RewindTurn.Params
+		response: Sockets.Sessions.RewindTurn.Response
+	}
+	"sessions:rewindTurn:error": {
+		params: never
+		response: Sockets.Sessions.RewindTurn.Response
+	}
+	"sessions:forwardTurn": {
+		params: Sockets.Sessions.ForwardTurn.Params
+		response: Sockets.Sessions.ForwardTurn.Response
+	}
+	"sessions:forwardTurn:error": {
+		params: never
+		response: Sockets.Sessions.ForwardTurn.Response
+	}
 	// Regenerate the last turn, as a whole (`core#retake`, lair pass R2).
 	"sessions:retakeTurn": {
 		params: Sockets.Sessions.RetakeTurn.Params
@@ -1618,13 +1753,47 @@ export type SocketEventMap = {
 		params: never
 		response: Sockets.ErrorResponse
 	}
-	"sessions:createLorebookFromPhantom": {
-		params: Sockets.Sessions.CreateLorebookFromPhantom.Params
-		response: Sockets.Sessions.CreateLorebookFromPhantom.Response
+	// 🚧 pr-6 (B §B-4): Share as a lorebook (was createLorebookFromPhantom) and Clone with changes and attach.
+	"sessions:shareAsLorebook": {
+		params: Sockets.Sessions.ShareAsLorebook.Params
+		response: Sockets.Sessions.ShareAsLorebook.Response
 	}
-	"sessions:createLorebookFromPhantom:error": {
+	"sessions:shareAsLorebook:error": {
 		params: never
-		response: Sockets.ErrorResponse
+		response: Sockets.Sessions.ShareAsLorebook.Response
+	}
+	"sessions:cloneWithChanges": {
+		params: Sockets.Sessions.CloneWithChanges.Params
+		response: Sockets.Sessions.CloneWithChanges.Response
+	}
+	"sessions:cloneWithChanges:error": {
+		params: never
+		response: Sockets.Sessions.CloneWithChanges.Response
+	}
+	// 🚧 pr-6 (B §B-5, §B-6): Archive · Unarchive · Close out (also the catch-up offer's press).
+	"sessions:archive": {
+		params: Sockets.Sessions.Archive.Params
+		response: Sockets.Sessions.Archive.Response
+	}
+	"sessions:archive:error": {
+		params: never
+		response: Sockets.Sessions.Archive.Response
+	}
+	"sessions:unarchive": {
+		params: Sockets.Sessions.Unarchive.Params
+		response: Sockets.Sessions.Unarchive.Response
+	}
+	"sessions:unarchive:error": {
+		params: never
+		response: Sockets.Sessions.Unarchive.Response
+	}
+	"sessions:closeOut": {
+		params: Sockets.Sessions.CloseOut.Params
+		response: Sockets.Sessions.CloseOut.Response
+	}
+	"sessions:closeOut:error": {
+		params: never
+		response: Sockets.Sessions.CloseOut.Response
 	}
 	"sessions:revisionNotice": {
 		params: Sockets.Sessions.RevisionNotice.Params
@@ -2262,14 +2431,6 @@ export type SocketEventMap = {
 	// "Reset all" — one delete of the configuration's rows rather than a loop
 	// of clears over the ones the panel happened to have loaded. Answers on
 	// `pipelines:get` like every other mutation.
-	"pipelines:resetConfig": {
-		params: Sockets.Pipelines.ResetConfig.Params
-		response: Sockets.Pipelines.ResetConfig.Response
-	}
-	"pipelines:resetConfig:error": {
-		params: never
-		response: { error?: string }
-	}
 	"pipelines:setOptions": {
 		params: Sockets.Pipelines.SetOptions.Params
 		response: Sockets.Pipelines.SetOptions.Response
@@ -2355,66 +2516,10 @@ export type SocketEventMap = {
 		params: never
 		response: { error?: string }
 	}
-	"pipelines:createConfig": {
-		params: Sockets.Pipelines.CreateConfig.Params
-		response: Sockets.Pipelines.CreateConfig.Response
-	}
-	"pipelines:createConfig:error": {
-		params: never
-		response: { error?: string }
-	}
-	"pipelines:renameConfig": {
-		params: Sockets.Pipelines.RenameConfig.Params
-		response: Sockets.Pipelines.RenameConfig.Response
-	}
-	"pipelines:renameConfig:error": {
-		params: never
-		response: { error?: string }
-	}
-	"pipelines:deleteConfig": {
-		params: Sockets.Pipelines.DeleteConfig.Params
-		response: Sockets.Pipelines.DeleteConfig.Response
-	}
-	"pipelines:deleteConfig:error": {
-		params: never
-		response: { error?: string }
-	}
-	"pipelines:setPresetActions": {
-		params: Sockets.Pipelines.SetPresetActions.Params
-		response: Sockets.Pipelines.SetPresetActions.Response
-	}
-	"pipelines:setPresetActions:error": {
-		params: never
-		response: { error?: string }
-	}
-	"pipelines:selectConfig": {
-		params: Sockets.Pipelines.SelectConfig.Params
-		response: Sockets.Pipelines.SelectConfig.Response
-	}
-	"pipelines:selectConfig:error": {
-		params: never
-		response: { error?: string }
-	}
 	// What publishing a new version did to a configuration. Read on its own
 	// event rather than with the view: the view is re-emitted by every write,
 	// and a banner that came back on each refresh could not be dismissed.
 	// A dismissal answers here too, with what is left.
-	"pipelines:configNotices": {
-		params: Sockets.Pipelines.ConfigNotices.Params
-		response: Sockets.Pipelines.ConfigNotices.Response
-	}
-	"pipelines:configNotices:error": {
-		params: never
-		response: { error?: string }
-	}
-	"pipelines:acknowledgeConfigNotices": {
-		params: Sockets.Pipelines.AcknowledgeConfigNotices.Params
-		response: Sockets.Pipelines.AcknowledgeConfigNotices.Response
-	}
-	"pipelines:acknowledgeConfigNotices:error": {
-		params: never
-		response: { error?: string }
-	}
 	"pipelines:promptWording": {
 		params: Sockets.Pipelines.PromptWording.Params
 		response: Sockets.Pipelines.PromptWording.Response
@@ -3172,6 +3277,14 @@ export type SocketEventMap = {
 		params: Sockets.ErrorResponse
 		response: Sockets.ErrorResponse
 	}
+	"systemSettings:updateRoutineCaps": {
+		params: Sockets.SystemSettings.UpdateRoutineCaps.Params
+		response: Sockets.SystemSettings.UpdateRoutineCaps.Response
+	}
+	"userSettings:updateRoutineCaps": {
+		params: Sockets.UserSettings.UpdateRoutineCaps.Params
+		response: Sockets.UserSettings.UpdateRoutineCaps.Response
+	}
 	"systemSettings:updateScriptsEnabled": {
 		params: Sockets.SystemSettings.UpdateScriptsEnabled.Params
 		response: Sockets.SystemSettings.UpdateScriptsEnabled.Response
@@ -3390,6 +3503,11 @@ export type SocketEventMap = {
 	}
 
 	// Lorebook events
+	// 🚧 pr-6 (B §B-3, R-f): the viewer's own books, for the Lorebooks view's "Session notes" — never a picker's.
+	"lorebooks:sessionNotes": {
+		params: Sockets.Lorebooks.SessionNotes.Params
+		response: Sockets.Lorebooks.SessionNotes.Response
+	}
 	"lorebooks:list": {
 		params: Sockets.Lorebooks.List.Params
 		response: Sockets.Lorebooks.List.Response
@@ -3402,6 +3520,15 @@ export type SocketEventMap = {
 		params: Sockets.Lorebooks.Get.Params
 		response: Sockets.Lorebooks.Get.Response
 	}
+	// 🚧 RF fix 4: an entry note's Revert / Keep.
+	"lorebooks:settleImprint": {
+		params: Sockets.Lorebooks.SettleImprint.Params
+		response: Sockets.Lorebooks.SettleImprint.Response
+	}
+	"lorebooks:settleImprint:error": {
+		params: never
+		response: Sockets.Lorebooks.SettleImprint.ErrorResponse
+	}
 	// `refusable()`'s refusal, sent to the asking tab alone.
 	"lorebooks:get:error": {
 		params: never
@@ -3410,6 +3537,50 @@ export type SocketEventMap = {
 	"lorebooks:create": {
 		params: Sockets.Lorebooks.Create.Params
 		response: Sockets.Lorebooks.Create.Response
+	}
+	"lorebooks:rulesChoices": {
+		params: Sockets.Lorebooks.RulesChoices.Params
+		response: Sockets.Lorebooks.RulesChoices.Response
+	}
+	"lorebooks:rulesChoices:error": {
+		params: Sockets.ErrorResponse
+		response: Sockets.ErrorResponse
+	}
+	"starterKits:list": {
+		params: Sockets.StarterKits.List.Params
+		response: Sockets.StarterKits.List.Response
+	}
+	// `refusable()`'s refusal, sent to the asking tab alone.
+	"starterKits:list:error": {
+		params: Sockets.ErrorResponse
+		response: Sockets.ErrorResponse
+	}
+	"starterKits:saveFromBook": {
+		params: Sockets.StarterKits.SaveFromBook.Params
+		response: Sockets.StarterKits.SaveFromBook.Response
+	}
+	// `refusable()`'s refusal, sent to the asking tab alone.
+	"starterKits:saveFromBook:error": {
+		params: Sockets.ErrorResponse
+		response: Sockets.ErrorResponse
+	}
+	"starterKits:clone": {
+		params: Sockets.StarterKits.Clone.Params
+		response: Sockets.StarterKits.Clone.Response
+	}
+	// `refusable()`'s refusal, sent to the asking tab alone.
+	"starterKits:clone:error": {
+		params: Sockets.ErrorResponse
+		response: Sockets.ErrorResponse
+	}
+	"starterKits:delete": {
+		params: Sockets.StarterKits.Delete.Params
+		response: Sockets.StarterKits.Delete.Response
+	}
+	// `refusable()`'s refusal, sent to the asking tab alone.
+	"starterKits:delete:error": {
+		params: Sockets.ErrorResponse
+		response: Sockets.ErrorResponse
 	}
 	// Synthesised by `register()` on a throw — see `entries:update:error`.
 	"lorebooks:create:error": {
@@ -3741,6 +3912,30 @@ export type SocketEventMap = {
 	}
 	// The two reads the lorebook workspace's frame asks for: the navigation
 	// column's figures, and the retrieval markers on its rows.
+	"entries:types": {
+		params: Sockets.Entries.Types.Params
+		response: Sockets.Entries.Types.Response
+	}
+	"entries:types:error": {
+		params: Sockets.ErrorResponse
+		response: Sockets.ErrorResponse
+	}
+	"entries:copyFromLibrary": {
+		params: Sockets.Entries.CopyFromLibrary.Params
+		response: Sockets.Entries.CopyFromLibrary.Response
+	}
+	"entries:copyFromLibrary:error": {
+		params: Sockets.ErrorResponse
+		response: Sockets.ErrorResponse
+	}
+	"lorebooks:library": {
+		params: Sockets.Lorebooks.Library.Params
+		response: Sockets.Lorebooks.Library.Response
+	}
+	"lorebooks:library:error": {
+		params: Sockets.ErrorResponse
+		response: Sockets.ErrorResponse
+	}
 	"entries:counts": {
 		params: Sockets.Entries.Counts.Params
 		response: Sockets.Entries.Counts.Response
@@ -4103,6 +4298,23 @@ export type SocketEventMap = {
 		params: Sockets.NarrativeGraph.CreateRelationship.Params
 		response: Sockets.NarrativeGraph.CreateRelationship.Response
 	}
+	// 🚧 Ties on the graph (T1–T4): a rule-fed row's held sides, and Set….
+	"narrativeGraph:tieSides": {
+		params: Sockets.NarrativeGraph.TieSides.Params
+		response: Sockets.NarrativeGraph.TieSides.Response
+	}
+	"narrativeGraph:tieSides:error": {
+		params: never
+		response: { error?: string }
+	}
+	"narrativeGraph:setTieSide": {
+		params: Sockets.NarrativeGraph.SetTieSide.Params
+		response: Sockets.NarrativeGraph.SetTieSide.Response
+	}
+	"narrativeGraph:setTieSide:error": {
+		params: never
+		response: { error?: string }
+	}
 	"narrativeGraph:mergeNode": {
 		params: Sockets.NarrativeGraph.MergeNode.Params
 		response: Sockets.NarrativeGraph.MergeNode.Response
@@ -4423,6 +4635,15 @@ export type SocketEventMap = {
 		params: Sockets.ErrorResponse
 		response: Sockets.ErrorResponse
 	}
+	// 🚧 RF fix 2, item 3: one holder's switch for one of the rules' attributes.
+	"state:setCarry": {
+		params: Sockets.State.SetCarry.Params
+		response: Sockets.State.SetCarry.Response
+	}
+	"state:setCarry:error": {
+		params: Sockets.ErrorResponse
+		response: Sockets.ErrorResponse
+	}
 	"state:ledger": {
 		params: Sockets.State.Ledger.Params
 		response: Sockets.State.Ledger.Response
@@ -4443,6 +4664,14 @@ export type SocketEventMap = {
 	"state:givePiece": {
 		params: Sockets.State.GivePiece.Params
 		response: Sockets.State.GivePiece.Response
+	}
+	"state:showTieSide": {
+		params: Sockets.State.ShowTieSide.Params
+		response: Sockets.State.ShowTieSide.Response
+	}
+	"state:showTieSide:error": {
+		params: never
+		response: Sockets.State.ShowTieSide.Response
 	}
 	"state:givePiece:error": {
 		params: never

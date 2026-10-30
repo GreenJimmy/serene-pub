@@ -24,7 +24,8 @@
  * legacy table goes read-only.
  */
 
-import { and, eq, gt, inArray, lt, sql, type SQL } from "drizzle-orm"
+import { and, eq, gt, inArray, isNotNull, isNull, lt, sql, type SQL } from "drizzle-orm"
+import type { AnyPgColumn } from "drizzle-orm/pg-core"
 import * as schema from "$lib/server/db/schema"
 import { STATEMENT_BYTES } from "$lib/server/attic/context"
 import {
@@ -105,25 +106,71 @@ async function withStoryClockStamp<
 	}
 }
 
+/* ── the forward stack (RF fix 5, 2026-10-23) ───────────────────────────── */
+
+/**
+ * 🚧 **The live history** — the ONE predicate, `liveMessageWhere`, lives in
+ * `./liveHistory` (a leaf module, so `./channels` can read it without an
+ * import cycle through this store) and is re-exported here, where every
+ * reader imports it.
+ */
+export { liveMessageWhere } from "./liveHistory"
+
+/**
+ * 🚧 **Replace on write** (owner ruling 2026-10-23: "On continue/new write,
+ * replace the rewound history"): any new write while the session holds
+ * rewound turns deletes them for good — the rows and, through the store's
+ * one delete, everything still anchored to them (Back already took their
+ * state back, so nothing is left but the rows). The ONE deletion of
+ * messages that stays on by default. Called on the caller's handle, so
+ * inside its transaction when it has one: by `insertLegacy` /
+ * `insertLegacyMany` for every new row of the session, and at the doors
+ * of the writes that make no row first (`runReply`, `fireAction`, a
+ * retake). Returns the ids it deleted; nothing to do costs one indexed
+ * read. Raises no event: the rows were already out of the history.
+ */
+export async function discardForwardStack(db: Db, sessionId: number): Promise<number[]> {
+	const where = and(
+		eq(schema.sessionMessages.sessionId, sessionId),
+		isNotNull(schema.sessionMessages.rewindOrdinal)
+	)
+	const [any] = await db
+		.select({ id: schema.sessionMessages.id })
+		.from(schema.sessionMessages)
+		.where(where)
+		.limit(1)
+	if (!any) return []
+	const gone = await deleteLegacyWhere(db, where)
+	const ids = gone.map((r) => r.id)
+	// What the session's changes still held unread about them goes too: the
+	// next reply reads the history as it now is, and never a line that was
+	// replaced (nor what it said).
+	if (ids.length)
+		await db
+			.delete(schema.sessionChanges)
+			.where(
+				and(
+					eq(schema.sessionChanges.sessionId, sessionId),
+					inArray(schema.sessionChanges.messageId, ids),
+					isNull(schema.sessionChanges.consumedByRunId)
+				)
+			)
+	return ids
+}
+
 /** Insert one legacy-shaped message; mirrors to the new model. */
 export async function insertLegacy(
 	db: Db,
 	values: Omit<typeof schema.sessionMessages.$inferInsert, "id">
 ): Promise<typeof schema.sessionMessages.$inferSelect> {
+	// 🚧 A new row while rewound replaces the forward stack (RF fix 5).
+	await discardForwardStack(db, values.sessionId)
 	const stamped = await withStoryClockStamp(db, values)
 	const [row] = await db
 		.insert(schema.sessionMessages)
 		.values(trimCommittedContent(stamped))
 		.returning()
 	await mirrorRow(db, row)
-	// 🚧 The annex as it stood before this line (`annexRevisionPoints.ts`):
-	// what a revision puts back. Never the reason an insert fails.
-	try {
-		const { takeRevisionPoint } = await import("$lib/server/sessions/annexRevisionPoints")
-		await takeRevisionPoint(db, row)
-	} catch (err) {
-		console.warn("[messages] annex revision point skipped:", err)
-	}
 	return row
 }
 
@@ -133,9 +180,14 @@ export async function insertLegacyMany(
 	values: Array<Omit<typeof schema.sessionMessages.$inferInsert, "id">>
 ): Promise<Array<typeof schema.sessionMessages.$inferSelect>> {
 	if (!values.length) return []
+	// 🚧 New rows while rewound replace the forward stack (RF fix 5).
+	for (const sessionId of new Set(values.map((v) => v.sessionId)))
+		await discardForwardStack(db, sessionId)
+	const stamped: typeof values = []
+	for (const v of values) stamped.push(await withStoryClockStamp(db, v))
 	const rows = await db
 		.insert(schema.sessionMessages)
-		.values(values.map(trimCommittedContent))
+		.values(stamped.map(trimCommittedContent))
 		.returning()
 	for (const row of rows) await mirrorRow(db, row)
 	return rows
@@ -186,6 +238,12 @@ export async function updateLegacyWhere(
  * deleted with it — the cascade a self-FK would give, through the one path
  * every delete takes. They are returned with the rest, after them, so a
  * caller that announces each delete announces these too.
+ *
+ * 🚧 **What they wrote on a lorebook goes with them** (RF fix 4, 2026-10-23:
+ * a delete behaves as a swipe does): the anchors the `messages.id` cascade
+ * cannot reach — lore imprints and the notes' entries, plain ints —
+ * are taken back here by the one rule (`retractLoreAnchoredTo`), in the
+ * caller's transaction. Hand it the `tx`.
  */
 export async function deleteLegacyWhere(
 	db: Db,
@@ -207,14 +265,16 @@ export async function deleteLegacyWhere(
 				all.map((r) => r.id)
 			)
 		)
+	await retractLoreOf(db, all)
 	return all
 }
 
 /** Delete one message from both worlds; scene spans keep its id (above). */
 export async function deleteLegacy(db: Db, id: number): Promise<void> {
-	await db
+	const rows = await db
 		.delete(schema.sessionMessages)
 		.where(eq(schema.sessionMessages.id, id))
+		.returning({ id: schema.sessionMessages.id, sessionId: schema.sessionMessages.sessionId })
 	await db.delete(schema.messages).where(eq(schema.messages.id, id))
 	// 🚧 And every row anchored to it (§30, above).
 	const anchored = await deleteAnchoredTo(db, [id])
@@ -225,6 +285,19 @@ export async function deleteLegacy(db: Db, id: number): Promise<void> {
 				anchored.map((r) => r.id)
 			)
 		)
+	await retractLoreOf(db, [...rows, ...anchored])
+}
+
+/** 🚧 The deleted rows' lorebook writes, taken back per session (RF fix 4; above). */
+async function retractLoreOf(
+	db: Db,
+	rows: ReadonlyArray<{ id: number; sessionId: number }>
+): Promise<void> {
+	if (!rows.length) return
+	const { retractLoreAnchoredTo } = await import("$lib/server/state/write")
+	const bySession = new Map<number, number[]>()
+	for (const r of rows) bySession.set(r.sessionId, [...(bySession.get(r.sessionId) ?? []), r.id])
+	for (const [sessionId, ids] of bySession) await retractLoreAnchoredTo(db, sessionId, ids)
 }
 
 /**
@@ -331,6 +404,7 @@ async function upsertProjection(
 				isEdited: message.isEdited,
 				debugMeta: message.debugMeta,
 				queueItemId: message.queueItemId,
+				rewindOrdinal: message.rewindOrdinal,
 				updatedAt: message.updatedAt
 			}
 		})

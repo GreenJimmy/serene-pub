@@ -17,6 +17,7 @@
 		useInterest
 	} from "$lib/client/sockets/interest.svelte"
 	import { interestKey } from "$lib/shared/sockets/interest"
+	import { mergeRefreshedRows } from "$lib/client/sessions/store/refreshMerge"
 	import { announce } from "$lib/client/accessibility/state.svelte"
 
 	const PAGE_SIZE = 25
@@ -108,7 +109,10 @@
 		return (m.parts ?? [])
 			.filter(
 				(p) =>
-					(p.type === "core:image" || p.type === "core:file") &&
+					(p.type === "core:image" ||
+						p.type === "core:audio" ||
+						p.type === "core:video" ||
+						p.type === "core:file") &&
 					p.revision === (active[String(p.step)] ?? 0) &&
 					typeof p.data?.assetId === "number"
 			)
@@ -390,6 +394,30 @@
 		}
 		pagination = msg.pagination
 	}
+	function handleSessionsRefresh(msg: Sockets.Sessions.Refresh.Response) {
+		if (msg.session === null) {
+			if (msg.sessionId === sessionId) {
+				loaded = true
+				notFound = true
+			}
+			return
+		}
+		if (!msg.session || msg.session.id !== sessionId || !session) return
+		const { sessionMessages: pushedRows, ...rest } = msg.session
+		const coversFromId =
+			(msg as { coversFromId?: number | null }).coversFromId ?? null
+		session = Array.isArray(pushedRows)
+			? {
+					...session,
+					...rest,
+					sessionMessages: mergeRefreshedRows(
+						session.sessionMessages,
+						pushedRows,
+						coversFromId
+					)
+				}
+			: { ...session, ...rest }
+	}
 	function handleSessionMessage(msg: Sockets.SessionMessage.Response) {
 		if (!msg.sessionMessage || msg.sessionMessage.sessionId !== sessionId)
 			return
@@ -514,10 +542,18 @@
 	 */
 	$effect(() => {
 		if (!Number.isFinite(sessionId)) return
-		return declareInterest<"sessions:get">(
+		const release = declareInterest<"sessions:get">(
 			interestKey("sessions:get", sessionId),
 			handleSessionsGet
 		)
+		const releaseRefresh = declareInterest<"sessions:refresh">(
+			interestKey("sessions:refresh", sessionId),
+			handleSessionsRefresh
+		)
+		return () => {
+			release()
+			releaseRefresh()
+		}
 	})
 
 	/**

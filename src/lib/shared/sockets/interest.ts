@@ -99,7 +99,18 @@ export const SCOPED_EVENTS: ReadonlyMap<string, InterestScopeExtractor> =
 			(payload) => payload?.session?.id ?? payload?.sessionId
 		],
 
+		// 🚧 pr-6: the member push, split from `sessions:get` so a push never
+		// takes a page's reply branch. The same payload, so the same field:
+		// the session's own id, else `sessionId` beside a null.
+		[
+			"sessions:refresh",
+			(payload) => payload?.session?.id ?? payload?.sessionId
+		],
+
 		// `{ sessionId, personaId, personaName }`.
+		// 🚧 pr-6 (B §B-2): `{ sessionId, genre }` — the one-genre read.
+		["sessions:genreOf", (payload) => payload?.sessionId],
+
 		["sessions:userTyping", (payload) => payload?.sessionId],
 
 		// `{ sessionId, runId, status }` — a run's status changed or ended
@@ -240,6 +251,11 @@ export const SCOPED_EVENTS: ReadonlyMap<string, InterestScopeExtractor> =
 		// nothing emits.)
 		["amendments:list", (payload) => payload?.lorebookId],
 		["entries:counts", (payload) => payload?.lorebookId],
+		// 🚧 A book's rules lists and its rules library (PLAN-lorebook-kinds
+		// §C): `lorebookId` top-level on every reply.
+		["entries:types", (payload) => payload?.lorebookId],
+		["lorebooks:library", (payload) => payload?.lorebookId],
+		["entries:copyFromLibrary", (payload) => payload?.entry?.lorebookId],
 		["entries:recentDecisions", (payload) => payload?.lorebookId],
 		["entries:delete", (payload) => payload?.lorebookId],
 		["entries:create", (payload) => payload?.entry?.lorebookId],
@@ -532,6 +548,7 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"state:ledger",
 	"state:attributes",
 	"state:setAttributePicks",
+	"state:setCarry",
 	"state:proposals",
 	"state:changed",
 	"state:set",
@@ -595,13 +612,21 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"sessions:adminList",
 	"sessions:bindFunction",
 	"sessions:branch",
-	"sessions:choosePreset",
 	"sessions:create",
-	// 🚧 Create lorebook from session — consumer: SessionViewPanel's ⋯ menu.
-	"sessions:createLorebookFromPhantom",
 	// 🚧 The overlay review (§26) — consumer: SessionViewPanel's changes card.
 	"sessions:overlayItems",
 	"sessions:applyOverlay",
+	// 🚧 pr-6 (B §B-4): Share as a lorebook (replaces createLorebookFromPhantom)
+	// and Clone with changes and attach — consumers: the Session notes row's ⋯,
+	// SessionViewPanel's ⋯, EditSessionForm's notes button. Bare, not scoped.
+	"sessions:shareAsLorebook",
+	"sessions:cloneWithChanges",
+	// 🚧 pr-6 (B §B-5, §B-6): Archive / Unarchive / Close out — consumer:
+	// SessionViewPanel's ⋯; Close out also the session page's catch-up notice.
+	// Bare, not scoped.
+	"sessions:archive",
+	"sessions:unarchive",
+	"sessions:closeOut",
 	// 🚧 On revision's sentence for the delete confirmation (§28) —
 	// consumer: the session page's message controls, through its inbox.
 	"sessions:revisionNotice",
@@ -609,7 +634,13 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"sessions:functionCandidates",
 	"sessions:functions",
 	"sessions:genres",
+	// 🚧 pr-6 (B §B-2): the one-genre read — consumer: the session page,
+	// SCOPED (`sessions:genreOf#<id>`).
+	"sessions:genreOf",
 	"sessions:get",
+	// 🚧 pr-6: the member push (`pushSessionToParticipants`) — consumer: the
+	// session page's inbox, SCOPED (`sessionPageData.svelte.ts`).
+	"sessions:refresh",
 	"sessions:getNarratorName",
 	"sessions:setFavorite",
 	// The L4 verbs (brief 6a: make a copy, share, save changes to, the
@@ -644,7 +675,6 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"sessions:panelLayout:startedFromUpdated",
 	"sessions:pipelines",
 	"sessions:presetStatus",
-	"sessions:presets",
 	"sessions:promptTokenCount",
 	"sessions:reassignRemovedParticipant",
 	// A package's recorded event (R56, E1d) — consumer: the session page,
@@ -680,7 +710,7 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	// pipelines: — slice 3 (2026-09-14). A MIXED family (26 admin-only, 28 open
 	// handlers), so it is NOT a restricted prefix. Consumers, all on the registry:
 	// client/components/pipelines/** (RunProgressCard, PipelineReviewModal,
-	// inspector/RunInspector, workspace/*, ConfigNotices, PipelineConfigOptions),
+	// inspector/RunInspector, workspace/*, PipelineConfigOptions),
 	// client/components/media/MediaManagerTab.svelte,
 	// client/components/lorebookForms/EntryFireTest.svelte,
 	// client/lorebooks/editor/retrievalReadout.svelte.ts,
@@ -692,12 +722,10 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	// `reviewRequested`/`reviewClosed` and `capPauseRequested`/`capPauseClosed`
 	// travel through the review transport in sockets/pipelines.ts, which
 	// honours this set like broadcastHelpers does.
-	// Fifteen write handlers answer ONLY through the cascaded `pipelines:get`
-	// (and `acknowledgeConfigNotices` through `pipelines:configNotices`), so a
+	// The write handlers answer ONLY through the cascaded `pipelines:get`, so a
 	// view that can write must hold that key — every converted one does. Every
 	// success event of the family is listed, including the ones no client reads
 	// (`validateTemplate`, the `cancelRun`/`resolveReview` acks).
-	"pipelines:acknowledgeConfigNotices",
 	"pipelines:artifactRuns",
 	"pipelines:cancelRun",
 	"pipelines:capPauseClosed",
@@ -711,13 +739,9 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"pipelines:cloneVariableTemplate",
 	"pipelines:composite:delete",
 	"pipelines:composite:save",
-	"pipelines:configNotices",
-	"pipelines:configsIndex",
-	"pipelines:createConfig",
 	"pipelines:createContextTemplate",
 	"pipelines:createPrompt",
 	"pipelines:createScript",
-	"pipelines:deleteConfig",
 	"pipelines:deleteContextTemplate",
 	"pipelines:deletePrompt",
 	"pipelines:deleteScript",
@@ -748,8 +772,6 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"pipelines:previewTemplate",
 	"pipelines:progress",
 	"pipelines:promptWording",
-	"pipelines:renameConfig",
-	"pipelines:resetConfig",
 	"pipelines:resolveCapPause",
 	"pipelines:resolveReview",
 	"pipelines:reviewClosed",
@@ -760,11 +782,9 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"pipelines:runStarted",
 	"pipelines:runs",
 	"pipelines:scripts",
-	"pipelines:selectConfig",
 	"pipelines:sessionEntryUsage",
 	"pipelines:setOption",
 	"pipelines:setOptions",
-	"pipelines:setPresetActions",
 	"pipelines:updateContextTemplate",
 	"pipelines:updatePrompt",
 	"pipelines:updateScript",
@@ -860,6 +880,7 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"amendments:list",
 	"bindingCheck:result",
 	"bindingSuggestions:list",
+	"entries:copyFromLibrary",
 	"entries:counts",
 	"entries:create",
 	"entries:delete",
@@ -868,6 +889,7 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"entries:recentDecisions",
 	"entries:sessionEntries",
 	"entries:setMarks",
+	"entries:types",
 	"entries:update",
 	"entries:updatePositions",
 	"lorebooks:bindingList",
@@ -877,19 +899,33 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"lorebooks:createBinding",
 	"lorebooks:delete",
 	"lorebooks:duplicate",
+	// 🚧 RF fix 4 — consumer: client/lorebooks/sections/KeptImprintNote.svelte
+	// (through `awaitReply`). Its refusal stays ungated (rule 1).
+	"lorebooks:settleImprint",
 	"lorebooks:get",
 	"lorebooks:import",
 	"lorebooks:importResolve",
+	"lorebooks:library",
 	"lorebooks:lines",
 	"lorebooks:list",
 	"lorebooks:listMemberFaces",
+	// 🚧 pr-6 (B §B-3, R-f): the asker's own books — consumer: the Lorebooks
+	// view's "Session notes" group (LorebooksWorkspace). Bare, not scoped.
+	"lorebooks:sessionNotes",
 	"lorebooks:resolveOrCreateBindingByName",
+	"lorebooks:rulesChoices",
 	"lorebooks:setCalendar",
 	"lorebooks:setClock",
 	"lorebooks:storyTime",
 	"lorebooks:update",
 	"lorebooks:updateBinding",
 	"lorebooks:uploadMemberFace",
+	// 🚧 Starter lorebooks (PLAN-lorebook-kinds §B) — consumers: the New lorebook
+	// kit picker, the session start form, Admin › Starter lorebooks (lane K2).
+	"starterKits:clone",
+	"starterKits:delete",
+	"starterKits:list",
+	"starterKits:saveFromBook",
 
 	// Session-adjacent — slice 6 (2026-09-15): scenes, sessionGenres (restricted),
 	// sessionPresets, narrativeGraph, media, vectorization (part), taskQueue
@@ -929,6 +965,11 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"narrativeGraph:list",
 	"narrativeGraph:listMergeLogs",
 	"narrativeGraph:mergeNode",
+	// 🚧 Ties on the graph (T1–T4), lane T2: the edit panel's tie sides
+	// block (client/lorebooks/graphs/TieSidesBlock.svelte) asks for a
+	// rule-fed row's sides and files Set… — both answered to the asker.
+	"narrativeGraph:setTieSide",
+	"narrativeGraph:tieSides",
 	"narrativeGraph:undoMerge",
 	"narrativeGraph:updateRelationship",
 	"scenes:compile:complete",
@@ -960,6 +1001,18 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"scenes:decideCue",
 	"scenes:processAll",
 	"scenes:openScenes",
+	// 🚧 Admin › Rulesets (PLAN-ruleset-editor §5). Consumer:
+	// client/admin/sections/rulesets/*. Their refusals stay ungated (rule 1).
+	"rulesets:askModel",
+	"rulesets:create",
+	"rulesets:delete",
+	"rulesets:detail",
+	"rulesets:list",
+	"rulesets:publish",
+	"rulesets:retire",
+	"rulesets:saveDraft",
+	"rulesets:scriptKey",
+	"rulesets:tryOut",
 	"sessionGenres:create",
 	"sessionGenres:detail",
 	"sessionGenres:list",
@@ -1083,6 +1136,7 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"users:current:hasPassphrase",
 	"users:current:logout",
 	"users:current:setPassphrase",
+	"users:current:updateAvatar",
 	"users:current:updateDisplayName",
 	"users:delete",
 	"users:get",

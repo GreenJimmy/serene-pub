@@ -16,7 +16,7 @@ Templates are written in **Handlebars** (everything Serene Pub ships, and every 
 
 ## Where they live
 
-A context template is chosen per pipeline, in **Admin › Pipelines**, on the step that builds the prompt. The choice is part of the pipeline's **configuration** (see [Pipelines and configurations](./pipelines.md)).
+A context template is chosen per pipeline, in **Admin › Pipelines**, on the step that builds the prompt. The choice is one of the pipeline's settings: the genre's default, which a preset can change for its sessions (see [Pipelines](./pipelines.md#where-a-value-comes-from)).
 
 Templates are **shared, not owned by one pipeline**. A template fits the _kind of step_ that renders it, so one written for session replies is just as selectable for the narrator. The picker groups templates by where they came from (this pipeline's, then the shipped ones, then everything else that fits), and hides nothing.
 
@@ -184,7 +184,7 @@ All of these may be empty, so wrap each in `{{#if …}}`. Use triple braces, `{{
 - **`scenario`**: the session's scenario.
 - **`worldLore`**: the world lore chosen for this turn, most relevant first.
 - **`history`**: summaries of earlier parts of the story, newest first, each headed by its date.
-- **`relationshipsPerspectives`** and **`relationshipsKnown`**: how the speaking character sees the others, and how they are seen in return (plus well-known figures marked **legendary**). Built fresh for whoever is speaking, whenever the session has a lorebook with a bound speaker.
+- **`relationshipsPerspectives`** and **`relationshipsKnown`**: how the speaking character sees the others, and how they are seen in return (plus well-known figures marked **legendary**). Built fresh for whoever is speaking, whenever the speaker is bound in the session's lorebook (or, with none, its **Session notes**).
 - **`docsExcerpts`**: the Guide's documentation excerpts, only on the Guide's reply (see [Guide](./genres.md#guide)).
 - **`recalledLines`**: older lines of the conversation found again because they name what the scene names now, one per line (_Earlier (turn 12) — Mira: I hid the brass key under the chapel floor._). No shipped pipeline or template uses it yet; to use it, set Entity search's **Earlier messages found by name** above 0 and place `{{{recalledLines}}}` in your template.
 - **`sessionMessages`**: the conversation, looped with `{{#each sessionMessages as |sessionMessage msgIndex|}}`. Each message has `role`, `name` and `message`, and `attachments` when it carries files: the files placed for the model (marked out so they reach that message's turn), text files written out, and names for the rest. Write `{{{attachments}}}` right after `{{{message}}}`, inside the message's block; it renders nothing on a message with no files. The last message is always the line the model continues (for example `Ash: `), so it must stay the last thing in the output. On a connection that sends chat messages, that line is left out when it is only a name (see [On the chat wire](#on-the-chat-wire)).
@@ -397,4 +397,4 @@ The checks are careful not to cry wolf: loop items, names you `{% assign %}`, `@
 
 0.6 does **not** carry 0.5's context templates across: after upgrading, every pipeline uses the shipped template. Any template you wrote is listed in the upgrade's notes (**Admin › History**, data upgrade), and its text is in the pre-upgrade backup in the data folder's `backups/`. Paste it into a new context template if you want it back, and pick the bare **JSON** / **As written** [layouts](#variable-layouts-where-the-headings-and-fences-come-from) for its pipelines, because a 0.5 template writes its own headings and fences. If it uses `narrativeGraph` or `speakerRelationships`, replace them with `relationshipsPerspectives` and `relationshipsKnown`: the old names no longer render anything.
 
-Your prompt text _is_ carried: each 0.5 prompt, narrator, summarizer and graph-build config becomes a configuration of the pipeline it fed (see [Pipelines → Upgrading from 0.5](./pipelines.md#upgrading-from-05)). Everything else the upgrade does is in [Upgrading from 0.5](./upgrading-from-0.5.md).
+Your prompt text _is_ carried: each 0.5 prompt, narrator, summarizer and graph-build config becomes a prompt of the step it fed, picked where you had picked it (see [Pipelines → Upgrading from 0.5](./pipelines.md#upgrading-from-05)). Everything else the upgrade does is in [Upgrading from 0.5](./upgrading-from-0.5.md).

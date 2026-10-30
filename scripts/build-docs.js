@@ -246,7 +246,7 @@ export const GUIDE_ORDER = [
 	},
 	{
 		group: "Reference and help",
-		pages: ["environment-variables", "troubleshooting", "release-notes/0.6.0-pr-3", "release-notes/0.6.0-pr-1"]
+		pages: ["environment-variables", "troubleshooting", "release-notes/0.6.0-pr-6", "release-notes/0.6.0-pr-3", "release-notes/0.6.0-pr-1"]
 	}
 ]
 
@@ -258,7 +258,7 @@ export const GUIDE_ORDER = [
  * A guide missing from this list is appended alphabetically and reported as a
  * warning — the compiler's rule, not a special case for this source.
  */
-const SDK_GUIDE_ORDER = ["extending", "vocabulary", "your-first-plugin", "widgets", "widget-examples", "frames", "channels", "events", "storage", "forms-and-effects", "plugin-permissions", "where-values-come-from"]
+const SDK_GUIDE_ORDER = ["extending", "vocabulary", "your-first-plugin", "widgets", "widget-examples", "frames", "channels", "events", "genres-presets-and-routines", "rulesets", "storage", "writing-lore-from-a-pipeline", "forms-and-effects", "plugin-permissions", "where-values-come-from"]
 
 /**
  * Reading order for the catalog-and-laws source, derived from its own pages.
@@ -266,8 +266,9 @@ const SDK_GUIDE_ORDER = ["extending", "vocabulary", "your-first-plugin", "widget
  * The pages are rendered from a package's announcement, so most of the list
  * cannot be written down here — which genre and which pipelines exist is the
  * announcement's business. What IS editorial is the shape of the read: what
- * the package is, then the genres it declares, then the pipelines that answer
- * their events, and last the guarantees a host owes all of it. Deriving the
+ * the package is, then the genres it declares, then the pipelines registered
+ * on their events, then what each event carries, and last the guarantees a
+ * host owes all of it. Deriving the
  * order means every page is in it, so nothing is ever appended (and warned
  * about) behind the compiler's back.
  *
@@ -280,8 +281,11 @@ function sdkReadingOrder(pages) {
 		if (p === "index.md") return 0
 		if (p.startsWith("genres/")) return 1
 		if (p.startsWith("pipelines/")) return 2
-		if (p === "laws.md") return 3
-		return 4
+		// What each event, action and cadence carries (A1): read after the
+		// pipelines it is the fit table for, before the host's guarantees.
+		if (p === "events.md") return 3
+		if (p === "laws.md") return 4
+		return 5
 	}
 	return [...pages]
 		.sort(

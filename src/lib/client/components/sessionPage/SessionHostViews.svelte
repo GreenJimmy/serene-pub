@@ -21,7 +21,9 @@
 	import {
 	composerClosedOn,
 	composerClosedPlaceholder,
-	composerClosuresFor
+	composerClosuresFor,
+	DEFAULT_CHANNEL,
+	parseChannel
 } from "@serene-pub/sdk"
 	import RunProgressCard from "$lib/client/components/pipelines/RunProgressCard.svelte"
 	import { newestRowIdOn } from "$lib/client/components/pipelines/runCardScope"
@@ -30,6 +32,7 @@
 	import GraphBuildModal from "$lib/client/components/modals/GraphBuildModal.svelte"
 	import RagNotice from "$lib/client/components/sessionPage/RagNotice.svelte"
 	import ActionLegend from "$lib/client/components/sessionPage/ActionLegend.svelte"
+	import ComposerRoutinesMenu from "$lib/client/components/sessionPage/ComposerRoutinesMenu.svelte"
 	import SessionBanners from "$lib/client/components/sessionPage/SessionBanners.svelte"
 	import ReadinessStrip from "$lib/client/components/sessionPage/ReadinessStrip.svelte"
 	import type { SessionPageData } from "$lib/client/components/sessionPage/sessionPageData.svelte"
@@ -281,7 +284,7 @@
 					userId: userCtx.user?.id,
 					channel,
 					rows: session?.sessionMessages,
-					sessionMetadata: session?.metadata
+					turnOrder: turns.turnOrderDoc
 				}),
 				NOT_YOUR_CONTINUE
 			]
@@ -367,11 +370,10 @@
 			</span>
 		{/if}
 	{/if}
-	<!-- Regenerate the last turn, as a whole (`retake`, R2): where
-	     the genre offers it, the server lists it here and takes the
-	     row regenerate (`retry`) off this venue, so one chip reads
-	     Regenerate. -->
-	{#if extraActionOn("retake", channel)}
+	<!-- Regenerate the last turn, as a whole (`retake`, R2): on the
+	     story it is the header's, beside Back and Forward (pr-6 D2) —
+	     drawn here only for another channel that lists it. -->
+	{#if extraActionOn("retake", channel) && channel != null && parseChannel(channel).slug !== DEFAULT_CHANNEL}
 		{@const t = extraActionOn("retake", channel)!}
 		{@const chip = extraChip(t)}
 		<button
@@ -427,6 +429,16 @@
 			</span>
 		{/if}
 	{/if}
+	<!-- 🚧 Routines (R39; lane 7): the session's owner runs an enabled
+	     routine now, like an action — on the main conversation's copy
+	     only, so a pinned channel's composer does not repeat it. -->
+	{#if loadedSessionId && !data.isGuest && (channel ?? "main").split(":")[0] === "main"}
+		<ComposerRoutinesMenu
+			sessionId={loadedSessionId}
+			isOwner={!data.isGuest}
+			chipClass={sessionChipClass}
+		/>
+	{/if}
 	<!-- The legend here when the genre lists no chips (so the
 	     genre's view, which carries it, is not drawn): a genre with
 	     none still has a way to learn what its controls and message
@@ -481,7 +493,7 @@
 		{@const chip = shut
 			? { disabled: true, reason: composerClosedPlaceholder(shut) }
 			: paletteRowState(chipVerdict(t), {
-					generating: !session || !!lastMessage?.isGenerating,
+					generating: data.generating,
 					newest: newestItem,
 					statusText
 				})}
@@ -567,9 +579,9 @@
 		{#if draftCompiledPrompt?.meta}
 			<div class="flex gap-4 text-xs">
 				<div class="flex flex-col gap-0.5">
-					<span class="text-surface-700-300 text-[11px]">Tokens</span>
+					<span class="text-surface-700-300 text-meta">Tokens</span>
 					<span
-						class:text-error-500={contextExceeded}
+						class:text-error-600-400={contextExceeded}
 						class="font-medium tabular-nums"
 					>
 						{draftCompiledPrompt.meta.tokenCounts.total} / {draftCompiledPrompt
@@ -577,7 +589,7 @@
 					</span>
 				</div>
 				<div class="flex flex-col gap-0.5">
-					<span class="text-surface-700-300 text-[11px]">
+					<span class="text-surface-700-300 text-meta">
 						Messages
 					</span>
 					<span class="font-medium tabular-nums">
@@ -587,7 +599,7 @@
 				</div>
 			</div>
 		{:else if draftCompiledPrompt?.error}
-			<span class="text-error-500 text-xs">
+			<span class="text-error-600-400 text-xs">
 				{draftCompiledPrompt.error}
 			</span>
 		{:else}

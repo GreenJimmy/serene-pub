@@ -1,4 +1,5 @@
 <script lang="ts">
+	import SettingCard from "./SettingCard.svelte"
 	/**
 	 * Read aloud's settings: which voices read (OpenVox's, when the pub has
 	 * them, or the browser's), how actions are read, the narrator's voice, the
@@ -64,17 +65,22 @@
 	}
 </script>
 
-<div class="card preset-filled-surface-100-900 p-4">
-	<h3 class="mb-2 text-sm font-medium">{t("Read aloud")}</h3>
-	<p class="text-surface-700-300 mb-3 text-sm">
-		{t(
-			"The speaker button on a message reads it aloud. These choices are saved in this browser only, because each device has its own voices."
-		)}
-		<a class="anchor" href={docsHref("read-aloud")}>
-			{t("About read aloud")}
-		</a>
-	</p>
+{#snippet readAloudHelp()}
+	{t(
+		"The speaker button on a message reads it aloud. These choices are saved in this browser only, because each device has its own voices."
+	)}
+	<a class="anchor" href={docsHref("read-aloud")}>
+		{t("About read aloud")}
+	</a>
+{/snippet}
 
+<SettingCard
+	title={t("Read aloud")}
+	titleId="user-read-aloud-heading"
+	helpId="user-read-aloud-note"
+	help={readAloudHelp}
+	layout="stack"
+>
 	{#if !supported}
 		<p class="text-surface-700-300 text-sm" role="status">
 			{t(
@@ -302,4 +308,4 @@
 			</div>
 		</div>
 	{/if}
-</div>
+</SettingCard>

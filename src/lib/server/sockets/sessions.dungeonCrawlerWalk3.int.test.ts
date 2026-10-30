@@ -13,6 +13,7 @@
  *    the seat that tried it, and the Narrator hears what it did (★2);
  */
 
+import { coreAnnexIn } from "$lib/server/sessions/coreAnnex"
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import fs from "fs/promises"
 import os from "os"
@@ -578,8 +579,8 @@ describe("R1-3: no Continue bar after a solo round", () => {
 		await settle()
 		const narrated = (await rowsOf(sessionId)).filter((r) => r.channel === "main" && r.role === "assistant").at(-1)!
 		expect(narrated.content).toBe(NARRATION)
-		const [row] = await db.select({ metadata: schema.sessions.metadata }).from(schema.sessions).where(eq(schema.sessions.id, sessionId))
-		expect((row!.metadata as any)?.turnOrder?.order ?? []).toEqual([])
+		const [row] = await db.select({ annex: schema.sessions.annex }).from(schema.sessions).where(eq(schema.sessions.id, sessionId))
+		expect((coreAnnexIn(row!.annex) as any)?.turnOrder?.order ?? []).toEqual([])
 		const heard = pushes.filter((p) => p.sessionId === sessionId && p.event === "sessions:turnOrder")
 		expect(heard.length).toBeGreaterThan(0)
 		expect(heard.at(-1)!.payload.turnOrder?.order ?? []).toEqual([])
@@ -597,14 +598,16 @@ async function ledgerTexts(sessionId: number) {
 }
 
 describe("R1-4: a new character's sheet reads as made, not as a fall", () => {
-	it("Vis Itineris: 'Health 12 (full)', never 'Health 20 → 12'; Story: 'Health Unhurt', never 'Health falls'", async () => {
+	it("Vis Itineris: 'Health 12 (full)', never 'Health 20 → 12'; Freeform: no health line, never 'Health falls'", async () => {
 		const { sessionId } = await madeTable("walk3-creation-lines")
 		const lines = await ledgerTexts(sessionId)
 		expect(lines).toContain("Health 12 (full)")
 		expect(lines.some((t) => /^Health 20 →/.test(t))).toBe(false)
 		const story = await madeTable("walk3-creation-words", { ruleset: "core:ruleset/freeform@1", rigour: "prose" })
 		const words = await ledgerTexts(story.sessionId)
-		expect(words).toContain("Health Unhurt")
+		// 🚧 S4 (lane G3, 2026-10-23): Freeform keeps no classes, so no kit sets a full health of its own —
+		// the sheet already reads full, and creation writes no health line at all (never a fall).
+		expect(words.filter((t) => /^Health/.test(t))).toEqual([])
 		expect(words).not.toContain("Health falls")
 	})
 })

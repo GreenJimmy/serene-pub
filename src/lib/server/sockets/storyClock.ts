@@ -31,6 +31,7 @@ import {
 import { checkSessionAccess } from "$lib/server/utils/sessionAccess"
 import { broadcastToSessionUsers } from "$lib/server/sockets/utils/broadcastHelpers"
 import { sessionReadingOf } from "$lib/server/state/reading"
+import { attachedOrOwnBookOf } from "$lib/server/lorebooks/ownBook"
 import {
 	advanceSessionStoryClock,
 	bookCalendarOf,
@@ -138,7 +139,7 @@ export async function setSessionStoryClock(
 	sessionId: number,
 	userId: number,
 	params: Sockets.Sessions.SetStoryClock.Params
-): Promise<{ moved: boolean }> {
+): Promise<{ moved: boolean; from?: StoryClock | null; to?: StoryClock | null }> {
 	const access = await checkSessionAccess(sessionId, userId)
 	if (!access.isOwner)
 		throw new StoryClockRefusal(
@@ -152,10 +153,10 @@ export async function setSessionStoryClock(
 			"Say one way to move the clock: follow its line, a date, or a step."
 		)
 	const before = await clockRow(sessionId)
-	if (!before?.lorebookId)
-		throw new StoryClockRefusal(
-			"This session has no lorebook, so it has no story clock."
-		)
+	if (!before) throw new StoryClockRefusal(`There is no session ${sessionId}.`)
+	// 🚧 pr-6 (§B-3a): no shared book — the session's own book.
+	const book = before.lorebookId ?? (await attachedOrOwnBookOf(db, sessionId))
+	if (book == null) throw new StoryClockRefusal(`There is no session ${sessionId}.`)
 	const was = clockOf(before)
 
 	if (stepping) {
@@ -165,14 +166,14 @@ export async function setSessionStoryClock(
 			)
 		// The step's own refusals (no present, a step of nothing, a date
 		// that does not land) are StoryClockRefusals with their sentence.
-		await advanceSessionStoryClock(
+		const stepped = await advanceSessionStoryClock(
 			db,
 			sessionId,
 			params.by as number,
 			params.unit as StoryTimeUnit
 		)
 		await noteTimeActionQuietly(sessionId)
-		return { moved: true }
+		return { moved: true, from: stepped.from, to: stepped.clock }
 	}
 
 	const clock = follow ? null : clockFrom(params.to)
@@ -183,7 +184,7 @@ export async function setSessionStoryClock(
 	if (clock) {
 		const problem = clockProblem(
 			clock,
-			await bookCalendarOf(db, before.lorebookId)
+			await bookCalendarOf(db, book)
 		)
 		if (problem)
 			throw new StoryClockRefusal(
@@ -200,6 +201,7 @@ export async function setSessionStoryClock(
 				lorebookId: before.lorebookId,
 				lorebookBranchId: before.lorebookBranchId
 			},
+			session: { id: sessionId, name: null },
 			clock
 		})
 		await tx
@@ -210,7 +212,9 @@ export async function setSessionStoryClock(
 	// A person setting the clock is a time action; following the line's
 	// present again is not — it moves back to where the book stands.
 	if (!follow) await noteTimeActionQuietly(sessionId)
-	return { moved: true }
+	// 🚧 Where it stood and where it stands, for `story-clock-moved` — a set
+	// date; following the line again names no date of its own.
+	return { moved: true, ...(clock ? { from: was, to: clock } : {}) }
 }
 
 /**
@@ -230,7 +234,15 @@ async function noteTimeActionQuietly(sessionId: number): Promise<void> {
  * `settings` cause — which never fires a turn. Best-effort: the clock moved
  * either way.
  */
-async function announceMoved(socket: any, sessionId: number, userId: number) {
+async function announceMoved(
+	socket: any,
+	sessionId: number,
+	userId: number,
+	move: { from?: StoryClock | null; to?: StoryClock | null } = {}
+) {
+	// 🚧 The owner moved a setting of the session: an interaction (R11, R21).
+	const { noteInteraction } = await import("$lib/server/pipelines/routines/interaction")
+	await noteInteraction(db, sessionId, "setting")
 	try {
 		await broadcastToSessionUsers(socket.io, sessionId, "state:changed", {
 			sessionId
@@ -249,6 +261,18 @@ async function announceMoved(socket: any, sessionId: number, userId: number) {
 			},
 			io: socket.io
 		})
+		// 🚧 The session moment (PLAN-layering D7, lane 6): once per move.
+		if (move.from && move.to) {
+			const { noteStoryClockMoved } = await import("$lib/server/pipelines/routines/moments")
+			await noteStoryClockMoved(db, {
+				sessionId,
+				userId,
+				cause: { kind: "settings", userId },
+				from: move.from,
+				to: move.to,
+				io: socket.io
+			})
+		}
 	} catch (err) {
 		console.warn("[storyClock] session-updated emit failed:", err)
 	}
@@ -295,12 +319,12 @@ export const sessionsSetStoryClock: Handler<
 		const token = tokenOf(params)
 		const userId = socket.user!.id
 		try {
-			const { moved } = await setSessionStoryClock(
+			const { moved, from, to } = await setSessionStoryClock(
 				params.sessionId,
 				userId,
 				params
 			)
-			if (moved) await announceMoved(socket, params.sessionId, userId)
+			if (moved) await announceMoved(socket, params.sessionId, userId, { from, to })
 			const reading = await readSessionStoryClock(
 				params.sessionId,
 				userId

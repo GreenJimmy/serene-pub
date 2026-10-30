@@ -22,7 +22,6 @@ import { registerPluginEvents } from "./pluginEvents"
 import { registerPluginHookPoints } from "./pluginHookPoints"
 import { registerPluginAnnex } from "./pluginAnnex"
 import { syncPluginVariables } from "./pluginVariables"
-import { makePluginRowPort } from "./rowStore"
 import { pluginsEnabled } from "./flag"
 import { syncPluginEngines } from "./engineHost"
 import { pluginEvents, syncPluginEventHooks } from "./eventHost"
@@ -48,12 +47,7 @@ function persist(rec: InvocationRecord): void {
 export function getManager(): SandboxManager {
 	if (!manager)
 		manager = new SandboxManager({
-			onInvocation: persist,
-			// The handle is resolved per call, exactly as the invocation log's
-			// is: the manager can be constructed by an admin route long before
-			// `bootstrapPlugins` has attached a database, and a store that
-			// captured `dbRef` at construction would be permanently null.
-			rows: makePluginRowPort(() => dbRef)
+			onInvocation: persist
 		})
 	return manager
 }
@@ -274,6 +268,19 @@ export async function bootstrapPlugins(db: Db): Promise<void> {
 			console.warn(`[genres] in-app genre not registered: ${line}`)
 	} catch (e) {
 		console.warn("[genres] in-app genre registration failed:", e)
+	}
+
+	// 🚧 Rulesets authored on this pub (PLAN-ruleset-editor §4), back in this
+	// process's ruleset registry from their published documents. After the
+	// stored slots (bootstrap) and the plugins, whose owners are reserved by
+	// then; before any reader of `rulesets()` answers a socket. A row this
+	// build refuses costs that one ruleset and says which; never the boot.
+	try {
+		const { registerPubRulesets } = await import("$lib/server/rulesets/pubRulesets")
+		for (const line of await registerPubRulesets(db))
+			console.warn(`[rulesets] authored ruleset not registered: ${line}`)
+	} catch (e) {
+		console.warn("[rulesets] authored ruleset registration failed:", e)
 	}
 
 	mgr.markReady()

@@ -30,9 +30,11 @@
  * book, refused by the genre's declared writes and by lore writes Off, as
  * `scenes:create` is.
  */
+import type { EventCause } from "@serene-pub/sdk"
 import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm"
 import * as schema from "$lib/server/db/schema"
 import { canonicalChannel } from "$lib/server/messages/channels"
+import { liveMessageWhere } from "$lib/server/messages/store"
 import {
 	loreWritesOffRefusal,
 	sceneWriteRefusal
@@ -65,6 +67,7 @@ import {
 	type RosterMember
 } from "$lib/server/utils/sceneCastProposal"
 import { resolveOrCreateBinding } from "$lib/server/utils/characterBindingSync"
+import { attachedOrOwnBookOf } from "$lib/server/lorebooks/ownBook"
 import { resolvePersonaName } from "$lib/shared/utils/resolveCharacterName"
 
 /** A refusal worded for the person who asked. */
@@ -259,7 +262,8 @@ async function newestLineId(
 			and(
 				eq(schema.sessionMessages.sessionId, sessionId),
 				eq(schema.sessionMessages.channel, channel),
-				gte(schema.sessionMessages.id, from)
+				gte(schema.sessionMessages.id, from),
+				liveMessageWhere()
 			)
 		)
 		.orderBy(desc(schema.sessionMessages.id))
@@ -281,7 +285,8 @@ async function lineBefore(
 			and(
 				eq(schema.sessionMessages.sessionId, sessionId),
 				eq(schema.sessionMessages.channel, channel),
-				sql`${schema.sessionMessages.id} < ${before}`
+				sql`${schema.sessionMessages.id} < ${before}`,
+				liveMessageWhere()
 			)
 		)
 		.orderBy(desc(schema.sessionMessages.id))
@@ -305,7 +310,8 @@ async function laneLineIds(
 				eq(schema.sessionMessages.sessionId, sessionId),
 				eq(schema.sessionMessages.channel, channel),
 				gte(schema.sessionMessages.id, from),
-				lte(schema.sessionMessages.id, to)
+				lte(schema.sessionMessages.id, to),
+				liveMessageWhere()
 			)
 		)
 	return rows.map((r) => r.id)
@@ -348,7 +354,8 @@ export async function liveRangeLineIds(
 		.where(
 			and(
 				eq(schema.sessionMessages.sessionId, sessionId),
-				gte(schema.sessionMessages.id, from)
+				gte(schema.sessionMessages.id, from),
+				liveMessageWhere()
 			)
 		)
 	for (const row of rows) {
@@ -953,17 +960,18 @@ export async function openScene(
 		channel?: string | null
 		atMessageId: number
 		closeAt?: number | null
+		/** 🚧 Why it opened, for the `scene-opened` it emits — a person's press unless said. */
+		cause?: EventCause
 	}
 ): Promise<LiveSceneResult> {
 	const { sessionId, userId } = params
 	const session = await ownedSession(db, sessionId, userId)
 	await assertSessionMayWriteScenes(db, sessionId)
-	if (!session.lorebookId)
-		throw new SceneBoundaryRefusal(
-			"This session reads no lorebook, so a scene has nowhere to be filed."
-		)
-	const lorebookId = session.lorebookId
-	const branchId = session.lorebookBranchId ?? null
+	// 🚧 pr-6 (§B-3a): no shared book — a scene is filed in the session's
+	// own book, which is main-line only.
+	const lorebookId = session.lorebookId ?? (await attachedOrOwnBookOf(db, sessionId))
+	if (lorebookId == null) throw new SceneBoundaryRefusal("That session is gone.")
+	const branchId = session.lorebookId != null ? (session.lorebookBranchId ?? null) : null
 	const channel = canonicalChannel(params.channel ?? "main")
 	const at = Number(params.atMessageId)
 	if (!Number.isInteger(at))
@@ -1065,16 +1073,20 @@ export async function openScene(
 
 	if (result.closed) await proposeAndWriteCast(db, result.closed)
 	const castProposal = await proposeAndWriteCast(db, result.scene)
-	// 🚧 *Picture each new scene* (lane 2, 2026-10-19): an open scene still
-	// open (not a range filed after the fact) is the scene changing. Never
-	// the reason a scene fails to open.
-	if (closeAt == null)
-		try {
-			const { onSceneOpened } = await import("$lib/server/sessions/taskEvents")
-			await onSceneOpened(db, { sessionId, channel })
-		} catch (err) {
-			console.warn(`[scenes] Picture each new scene for session ${sessionId} was skipped:`, err)
-		}
+	/**
+	 * 🚧 The session moments (PLAN-layering D7, lane 6): the scene this
+	 * opening closed, then the scene it opened — when it is a live scene
+	 * still open (not a range filed after the fact). Registrations and
+	 * routines answer them (*Picture each new scene* is a routine on
+	 * `scene-opened`). Never the reason a scene fails to open.
+	 */
+	{
+		const { noteScene } = await import("$lib/server/pipelines/routines/moments")
+		const moment = { sessionId, userId, cause: params.cause ?? { kind: "user" as const, userId } }
+		if (result.closed)
+			await noteScene(db, { ...moment, opened: false, sceneId: result.closed.id, messageId: result.closed.closedAtMessageId })
+		if (closeAt == null) await noteScene(db, { ...moment, opened: true, sceneId: result.scene.id, messageId: at })
+	}
 	return {
 		sessionId,
 		scene: await reread(db, result.scene.id),
@@ -1115,7 +1127,13 @@ async function ownedLiveScene(db: Db, sceneId: number, userId: number) {
 /** Close the open scene at `atMessageId`, or at the channel's newest line. */
 export async function closeScene(
 	db: Db,
-	params: { sceneId: number; userId: number; atMessageId?: number | null }
+	params: {
+		sceneId: number
+		userId: number
+		atMessageId?: number | null
+		/** 🚧 Why it closed, for the `scene-closed` it emits — a person's press unless said. */
+		cause?: EventCause
+	}
 ): Promise<LiveSceneResult> {
 	const scene = await ownedLiveScene(db, params.sceneId, params.userId)
 	if (scene.closedAtMessageId != null)
@@ -1145,6 +1163,18 @@ export async function closeScene(
 		return closeWithin(tx, scene, at)
 	})
 	const castProposal = await proposeAndWriteCast(db, closed)
+	// 🚧 The session moment (PLAN-layering D7, lane 6): `scene-closed`.
+	{
+		const { noteScene } = await import("$lib/server/pipelines/routines/moments")
+		await noteScene(db, {
+			sessionId: scene.sessionId,
+			userId: params.userId,
+			cause: params.cause ?? { kind: "user", userId: params.userId },
+			opened: false,
+			sceneId: closed.id,
+			messageId: closed.closedAtMessageId
+		})
+	}
 	return {
 		sessionId: scene.sessionId,
 		scene: await reread(db, closed.id),
@@ -1482,6 +1512,191 @@ export async function sceneHeaderOf(
 		const parts = out.name.split(" · ").map((p) => p.trim())
 		if (out.place && parts.includes(out.place)) delete out.place
 		if (out.date && parts.includes(out.date)) delete out.date
+	}
+	return out
+}
+
+/* ── scene boundaries under Back · Forward (pr-6 A2) ─────────────────────── */
+
+/**
+ * 🚧 What Back did to one scene at one taken row, for Forward to put back
+ * (pr-6 C9, ruled 2026-10-24: "boundaries are anchored changes — Back
+ * moves/removes them, Forward restores them"; shapes §A-2). Always the scene
+ * as it stood BEFORE: `removed` — it opened at the taken row and was deleted;
+ * `changed` — it was reopened, its close moved, or its selection trimmed.
+ */
+export type SceneBoundaryTaken =
+	| { kind: "removed"; row: SceneRow }
+	| { kind: "changed"; row: SceneRow }
+
+/** Reopen: no close, no closing clock, an empty selection, a reset summary. */
+const reopenedPatch = (scene: SceneRow): Partial<typeof schema.scenes.$inferInsert> => ({
+	closedAtMessageId: null,
+	...prefixed("closed", null),
+	selectedMessageIds: [],
+	summaryStatus: resetSummary(scene),
+	updatedAt: new Date()
+})
+
+/**
+ * 🚧 Back's half: the scene boundaries anchored to `messageId`, taken, in the
+ * order taken — inside the caller's transaction (`retractStateAnchoredTo`
+ * with `scenes: 'take'`). Rules, in order (shapes §A-2): a scene opened at the
+ * row is removed and the one before it reopens; a scene closed at the row
+ * reopens (or its close moves back); a selection holding the row loses it.
+ * A scene with an applied summary is never touched.
+ */
+export async function takeSceneBoundariesAt(tx: Db, messageId: number): Promise<SceneBoundaryTaken[]> {
+	const taken: SceneBoundaryTaken[] = []
+	const [msg] = await tx
+		.select({ sessionId: schema.sessionMessages.sessionId })
+		.from(schema.sessionMessages)
+		.where(eq(schema.sessionMessages.id, messageId))
+		.limit(1)
+	if (!msg?.sessionId) return taken
+	const sessionId = msg.sessionId
+	const sceneRows = () =>
+		tx.select().from(schema.scenes).where(eq(schema.scenes.sessionId, sessionId))
+	const notDone = (s: SceneRow) => s.summaryStatus !== "done"
+
+	// 1. Scenes opened at the row.
+	for (const s of (await sceneRows()).filter(
+		(x) => x.openedAtMessageId === messageId && notDone(x)
+	)) {
+		await tx.delete(schema.scenes).where(eq(schema.scenes.id, s.id))
+		taken.push({ kind: "removed", row: s })
+		const before = await lineBefore(tx, sessionId, s.channel, messageId)
+		const prior = (await sceneRows())
+			.filter(
+				(x) =>
+					x.channel === s.channel &&
+					x.openedAtMessageId != null &&
+					x.openedAtMessageId < messageId
+			)
+			.sort((a, b) => b.openedAtMessageId! - a.openedAtMessageId!)[0]
+		if (
+			prior &&
+			notDone(prior) &&
+			prior.closedAtMessageId != null &&
+			prior.closedAtMessageId === before
+		) {
+			await tx
+				.update(schema.scenes)
+				.set(reopenedPatch(prior))
+				.where(eq(schema.scenes.id, prior.id))
+			taken.push({ kind: "changed", row: prior })
+		}
+	}
+
+	// 2. Scenes closed at the row.
+	for (const s of (await sceneRows()).filter(
+		(x) => x.closedAtMessageId === messageId && notDone(x)
+	)) {
+		const all = await sceneRows()
+		const stands = all.some(
+			(x) =>
+				x.id !== s.id &&
+				x.channel === s.channel &&
+				x.openedAtMessageId != null &&
+				(x.openedAtMessageId > (s.openedAtMessageId ?? 0) ||
+					x.closedAtMessageId == null)
+		)
+		if (!stands) {
+			await tx
+				.update(schema.scenes)
+				.set(reopenedPatch(s))
+				.where(eq(schema.scenes.id, s.id))
+		} else {
+			const before = await lineBefore(tx, sessionId, s.channel, messageId)
+			if (before == null || s.openedAtMessageId == null) continue
+			const m = await boundaryMessage(tx, sessionId, s.channel, before)
+			await tx
+				.update(schema.scenes)
+				.set({
+					closedAtMessageId: before,
+					...prefixed("closed", clockOf(m)),
+					selectedMessageIds: await derivedSelection(
+						tx,
+						s,
+						s.openedAtMessageId,
+						before
+					),
+					summaryStatus: resetSummary(s),
+					updatedAt: new Date()
+				})
+				.where(eq(schema.scenes.id, s.id))
+		}
+		taken.push({ kind: "changed", row: s })
+	}
+
+	// 3. Selections holding the row.
+	for (const s of (await sceneRows()).filter(
+		(x) =>
+			notDone(x) && ((x.selectedMessageIds ?? []) as number[]).includes(messageId)
+	)) {
+		const left = ((s.selectedMessageIds ?? []) as number[]).filter(
+			(id) => id !== messageId
+		)
+		if (s.openedAtMessageId == null && left.length === 0) {
+			await tx.delete(schema.scenes).where(eq(schema.scenes.id, s.id))
+			taken.push({ kind: "removed", row: s })
+		} else {
+			await tx
+				.update(schema.scenes)
+				.set({ selectedMessageIds: left, updatedAt: new Date() })
+				.where(eq(schema.scenes.id, s.id))
+			taken.push({ kind: "changed", row: s })
+		}
+	}
+	return taken
+}
+
+/**
+ * 🚧 Forward's half: each taken record put back, the LAST taken first — a
+ * removed scene inserted again with its id, a changed one set back column for
+ * column. Inside the caller's transaction.
+ */
+export async function restoreSceneBoundaries(tx: Db, taken: readonly SceneBoundaryTaken[]): Promise<void> {
+	for (const t of [...taken].reverse()) {
+		if (t.kind === "removed") {
+			await tx.insert(schema.scenes).values(t.row)
+		} else {
+			await tx.update(schema.scenes).set(t.row).where(eq(schema.scenes.id, t.row.id))
+		}
+	}
+}
+
+/** 🚧 Each scene's folded lore sources (pr-6s2 G5): one grouped read of `lore_sources` (subject `scene`) and one read of the through lines' times; a scene with none is absent. */
+export async function sceneLoreSourcesOf(
+	db: Db,
+	sceneIds: readonly number[]
+): Promise<Map<number, Sockets.Scenes.List.SceneLoreSources>> {
+	const out = new Map<number, Sockets.Scenes.List.SceneLoreSources>()
+	if (!sceneIds.length) return out
+	const ls = schema.loreSources
+	const rows = await db
+		.select({
+			subjectId: ls.subjectId,
+			from: sql<number>`min(${ls.fromMessageId})`.mapWith(Number),
+			through: sql<number>`max(${ls.throughMessageId})`.mapWith(Number)
+		})
+		.from(ls)
+		.where(and(eq(ls.subjectKind, "scene"), inArray(ls.subjectId, [...sceneIds])))
+		.groupBy(ls.subjectId)
+	if (!rows.length) return out
+	const times = await db
+		.select({ id: schema.messages.id, createdAt: schema.messages.createdAt })
+		.from(schema.messages)
+		.where(inArray(schema.messages.id, [...new Set(rows.map((r) => r.through))]))
+	const at = new Map(times.map((t) => [t.id, t.createdAt]))
+	for (const r of rows) {
+		const t = at.get(r.through)
+		const d = t ? new Date(t as any) : null
+		out.set(r.subjectId, {
+			fromMessageId: r.from,
+			throughMessageId: r.through,
+			throughAt: d && Number.isFinite(d.getTime()) ? d.toISOString() : null
+		})
 	}
 	return out
 }

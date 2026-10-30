@@ -41,6 +41,7 @@
  *     looked past.
  */
 
+import { coreAnnexIn } from "$lib/server/sessions/coreAnnex"
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import fs from "fs/promises"
 import os from "os"
@@ -69,12 +70,12 @@ vi.mock("$lib/server/embedding/vectorizationQueue", () => ({
 	ensureSessionMessageEmbedded: async () => {},
 	autoEnqueueSession: async () => {}
 }))
-/** Every whole-session push to the members (`sessions:get`), its thunk kept. */
+/** Every whole-session push to the members (`sessions:refresh`), its thunk kept. */
 const sessionPushes = vi.hoisted(() => [] as Array<{ sessionId: number; build: () => Promise<any> }>)
 vi.mock("$lib/server/sockets/utils/broadcastHelpers", () => ({
 	emitToUserRedacted: async () => {},
 	broadcastToSessionUsers: async (_io: unknown, sessionId: number, event: string, data: unknown) => {
-		if (event === "sessions:get" && typeof data === "function")
+		if (event === "sessions:refresh" && typeof data === "function")
 			sessionPushes.push({ sessionId, build: data as () => Promise<any> })
 	}
 }))
@@ -763,10 +764,10 @@ describe("the Planner talks in a lane", () => {
 			wait: true
 		})
 		const [row] = await db
-			.select({ metadata: schema.sessions.metadata })
+			.select({ annex: schema.sessions.annex })
 			.from(schema.sessions)
 			.where(eq(schema.sessions.id, sessionId))
-		const order = readTurnOrder(row!.metadata).order
+		const order = readTurnOrder(coreAnnexIn(row!.annex)).order
 		expect(order).toEqual([expect.objectContaining({ ref: null, channel: "parley" })])
 
 		calls.length = 0
@@ -836,7 +837,7 @@ describe("the story turn", () => {
 		expect(after.filter((r) => r.channel === "main")).toHaveLength(1)
 		// 🚧 The check the Planner asked for, rolled by the ruleset handler
 		// (Vis Itineris), its number explained at the end; then the wound it proposed.
-		expect(story[0]!.content).toMatch(/^⚄ Ann the Bold — use \(Athletics skill\): [^\n]+ — d20 \d+[^\n]* = \d+ vs 10\n⚄ Ann the Bold: Health −6$/)
+		expect(story[0]!.content).toMatch(/^⚄ Ann the Bold — use \(Athletics\): [^\n]+ — d20 \d+[^\n]* = \d+ vs 10\n⚄ Ann the Bold: Health −6$/)
 		expect(story[1]!.content).toBe(NARRATION)
 		expect((story[1]!.metadata as any)?.speaker).toBe("envoy:narrator")
 		const roll = story[0]!
@@ -851,7 +852,7 @@ describe("the story turn", () => {
 		const flat = told.map((t) => t.text).join("\n")
 		expect(flat.indexOf("Outcomes this round:")).toBeGreaterThan(flat.indexOf("I climb the wall."))
 		expect(told[0]!.text).not.toContain("The dice decided")
-		expect(told.at(-1)!.text).toMatch(/Outcomes this round:\n[\s\S]*Ann the Bold — use \(Athletics skill\)/)
+		expect(told.at(-1)!.text).toMatch(/Outcomes this round:\n[\s\S]*Ann the Bold — use \(Athletics\)/)
 		// The Planner read the ruleset's blocks by name, and how this table plays.
 		expect(calls[0]).toContain("The table rolls the dice, never you. Propose deltas, never totals")
 		// The sheet, the clock, the journal line, the books.
@@ -1095,7 +1096,7 @@ describe("context leaks (owner screenshot 2026-10-15)", () => {
 			expect(told.content).toBe(NARRATION)
 			// 2. The roll line is the table's (🚧 §30): on its own channel,
 			// anchored to the Narrator's row, and not in what the Narrator read.
-			expect(roll.content).toMatch(/^⚄ Ann the Bold — use \(Persuasion skill\)/)
+			expect(roll.content).toMatch(/^⚄ Ann the Bold — use \(Persuasion\)/)
 			expect((roll.metadata as any)?.anchorMessageId).toBe(told.id)
 			expect(first[1]).toContain("The ghost answers Ann.")
 			expect(first[1]).not.toContain("⚄")
