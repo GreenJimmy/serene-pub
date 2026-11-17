@@ -1,11 +1,13 @@
 # This fork's SDK overlay
 
-Read aloud needs a change in serene-pub-sdk (the `sp-read-aloud` host element,
-and core's message card placing it) that no published SDK package carries yet.
-Until it does, this fork builds the SDK itself:
+The "Back to the start of this message" arrow needs a change in
+serene-pub-sdk (core's message card drawing the link) that no published SDK
+package carries yet. It is offered upstream; until it ships, this fork builds
+the SDK itself:
 
-- `sdk-commit` is the serene-pub-sdk commit the app was built and tested against.
-- `sdk-read-aloud.patch` is applied on top of it.
+- `sdk-commit` is the serene-pub-sdk commit the app is built against
+  (v0.6.0-pr-8).
+- `sdk-jump-to-start.patch` is applied on top of it.
 
 `.github/workflows/docker-fork.yml` checks that commit out as `.serene-pub-sdk`,
 applies the patch and builds it; the Dockerfile links it in for the build and

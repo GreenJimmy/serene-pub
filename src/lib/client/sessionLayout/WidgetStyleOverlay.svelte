@@ -38,7 +38,7 @@
 	import {
 		openWidgetSettings,
 		widgetSettingsTitle
-	} from "./widgetSettingsState.svelte"
+	} from "./widgetSettingsModal.svelte"
 	import { widgetDuplicator } from "./widgetDuplicate.svelte"
 
 	interface Props {

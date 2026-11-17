@@ -34,7 +34,7 @@ jobs:
                   git init -q .serene-pub-sdk
                   git -C .serene-pub-sdk fetch -q --depth 1 https://github.com/SerenePub/serene-pub-sdk.git "$SDK_COMMIT"
                   git -C .serene-pub-sdk checkout -q FETCH_HEAD
-                  git -C .serene-pub-sdk apply "$GITHUB_WORKSPACE/fork/sdk-read-aloud.patch"
+                  git -C .serene-pub-sdk apply "$GITHUB_WORKSPACE/fork/sdk-jump-to-start.patch"
                   cd .serene-pub-sdk
                   for i in 1 2 3; do npm install --no-audit --no-fund && break || sleep 15; done
                   npm run build

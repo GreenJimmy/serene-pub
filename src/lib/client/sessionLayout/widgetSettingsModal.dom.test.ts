@@ -13,7 +13,7 @@ import {
 	openWidgetSettings,
 	widgetSettingsModal,
 	widgetSettingsTitle
-} from "./widgetSettingsState.svelte"
+} from "./widgetSettingsModal.svelte"
 import { setWidgetStyleMode } from "$lib/client/stores/widgetStyles.svelte"
 import { setWidgetDuplicator } from "./widgetDuplicate.svelte"
 import { setWidgetSettingDecls } from "$lib/client/stores/widgetSettings.svelte"

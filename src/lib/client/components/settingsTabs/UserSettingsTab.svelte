@@ -40,7 +40,6 @@
 	import SettingCard from "./SettingCard.svelte"
 	import AvatarPicker from "$lib/client/components/media/AvatarPicker.svelte"
 	import { avatarSrc } from "$lib/client/utils/media"
-	import ReadAloudSettings from "./ReadAloudSettings.svelte"
 	import {
 		LORE_WRITE_MODE_CHOICES,
 		effectiveLoreWriteMode,
@@ -591,8 +590,6 @@
 			({displayTimeZone()})
 		</p>
 	</SettingCard>
-
-	<ReadAloudSettings />
 
 	<!-- Lorebook writes from sessions (plan A22) -->
 	<SettingCard

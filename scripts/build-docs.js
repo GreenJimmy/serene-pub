@@ -204,7 +204,6 @@ export const GUIDE_ORDER = [
 			"sessions",
 			"group-sessions",
 			"session-layout",
-			"read-aloud",
 			"images",
 			"genres",
 			"genre-story",

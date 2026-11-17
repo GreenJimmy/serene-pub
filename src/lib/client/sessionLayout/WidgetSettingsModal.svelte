@@ -30,7 +30,7 @@
 		widgetSettingsModal,
 		widgetSettingsReturnTarget,
 		widgetSettingsTitle
-	} from "./widgetSettingsState.svelte"
+	} from "./widgetSettingsModal.svelte"
 
 	const modal = widgetSettingsModal()
 	const styles = widgetStylesStore()
