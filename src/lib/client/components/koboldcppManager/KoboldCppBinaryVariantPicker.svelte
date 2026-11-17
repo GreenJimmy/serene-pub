@@ -3,8 +3,10 @@
 	import Select from "$lib/client/components/inputs/Select.svelte"
 	import { useTypedSocket } from "$lib/client/sockets/loadSockets.client"
 	import { useInterest } from "$lib/client/sockets/interest.svelte"
-	import { toaster } from "$lib/client/utils/toaster"
-	import { getContext, onMount } from "svelte"
+	import { notify } from "$lib/client/utils/notify"
+	import { getContext, onMount, untrack } from "svelte"
+	import { useMachineHardware } from "$lib/client/components/connections/useMachineHardware.svelte"
+	import { detectedBuild } from "$lib/client/components/connections/hardwarePicks"
 
 	interface Props {
 		onDownloadStarted: () => void
@@ -38,6 +40,20 @@
 	let confirming = $state(false)
 	let downloadStarted = $state(false)
 	let isDownloading = $derived(!!download && !download.isDone)
+
+	// The build this computer suggests, and why. The person's click always
+	// wins: the reason shows only while the selection is still the suggestion.
+	const hardware = useMachineHardware()
+	let autoPicked = $state<{ name: string; reason: string } | null>(null)
+	$effect(() => {
+		const list = variants
+		const hw = hardware.current
+		if (untrack(() => selected) !== null || isDownloading) return
+		const pick = detectedBuild(list, hw)
+		if (!pick) return
+		selected = pick.variant
+		autoPicked = { name: pick.variant.name, reason: pick.reason }
+	})
 
 	$effect(() => {
 		if (
@@ -85,6 +101,7 @@
 		loading = true
 		error = null
 		selected = null
+		autoPicked = null
 		variants = []
 		socket.emit("koboldcpp:listBinaryVariants", {
 			tag: tag === "latest" ? undefined : tag
@@ -317,9 +334,7 @@
 	{:else}
 		{#each sortedPlatforms as platform}
 			<div>
-				<p
-					class="text-surface-600-400 mb-2 text-xs"
-				>
+				<p class="text-surface-600-400 mb-2 text-xs">
 					{platformLabel[platform] ?? platform}
 				</p>
 				<div class="flex flex-col gap-1.5">
@@ -355,7 +370,7 @@
 		{/each}
 
 		{#if selected}
-			<div class="border-surface-200-800 mt-1 rounded-lg border p-3">
+			<div class="bg-surface-100-900 mt-1 rounded-lg p-3">
 				<p class="text-xs font-medium">
 					Selected: <span class="text-primary-ink">
 						{selected.name}
@@ -364,6 +379,11 @@
 				<p class="text-surface-700-300 text-xs">
 					{selected.description}
 				</p>
+				{#if autoPicked && selected.name === autoPicked.name}
+					<p class="text-surface-600-400 text-xs">
+						{autoPicked.reason}
+					</p>
+				{/if}
 			</div>
 		{/if}
 

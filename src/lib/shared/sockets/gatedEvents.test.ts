@@ -44,6 +44,9 @@ import {
  *   - `backups:`       — client/components/settingsTabs/DataSettingsTab.svelte
  */
 const MIGRATED_FAMILIES = [
+	// The speech build (2026-10-28): born gated — voicebank CRUD and the
+	// speech-facts refresh are declared through the interest registry.
+	"voicebank:",
 	"language:",
 	"widgetStyles:",
 	"state:",
@@ -135,7 +138,16 @@ const MIGRATED_FAMILIES = [
 	"cardState:",
 	// Admin › Updates (2026-10-01): born gated; its one consumer
 	// (admin/sections/updates/Page.svelte) is on the registry.
-	"updates:"
+	"updates:",
+	// 🚧 Plugin actions and catalogs (M0, 2026-10-28): born gated; their
+	// consumers (frames/pluginActions.ts, frames/pluginCatalogs.svelte.ts) ask
+	// through `awaitReply`, on the registry by construction.
+	"pluginActions:",
+	"pluginCatalogs:",
+	// 🚧 audio.cpp, run by Serene Pub (lane A, 2026-10-29): born gated and
+	// admin-only; it has no client consumer yet, and lane D writes its
+	// consumers on the registry by construction.
+	"audiocpp:"
 ]
 
 /**
@@ -149,7 +161,17 @@ const MIGRATED_FAMILIES = [
  *     client/lorebooks/LorebooksWorkspace.svelte — all three on the registry,
  *     all three declaring the SCOPED key.
  */
-const MIGRATED_EVENTS = ["sessionMessage"]
+const MIGRATED_EVENTS = [
+	"sessionMessage",
+	"models:refreshSpeech",
+	"models:presence",
+	// 🚧 Lane C, 2026-10-30: one consumer, `useMachineHardware.svelte.ts`, on
+	// the registry from its first line.
+	"models:machineHardware",
+	// 🚧 shelf-B, 2026-11-08: one consumer, `ModelFinderView.svelte` (the
+	// finder model page), on the registry from its first line.
+	"models:hubCard"
+]
 
 describe("GATED_EVENTS", () => {
 	test("gates no error event", () => {
@@ -297,7 +319,7 @@ describe("scopeOfPayload", () => {
 		for (const event of [
 			"sessions:genreOf",
 			"sessions:shareAsLorebook",
-			"sessions:cloneWithChanges",
+			"sessions:foldInParent",
 			"sessions:archive",
 			"sessions:unarchive",
 			"sessions:closeOut",
@@ -463,5 +485,49 @@ describe("the streamed reply", () => {
 	test("is gated, and its error sibling is not", () => {
 		expect(isGatedEvent("sessionMessage")).toBe(true)
 		expect(isGatedEvent("sessionMessage:error")).toBe(false)
+	})
+})
+
+describe("models:presence (model consolidation, MV pin)", () => {
+	test("is gated — a tab that never opened a finder is not sent presence answers — and its error sibling is not", () => {
+		expect(isGatedEvent("models:presence")).toBe(true)
+		expect(isGatedEvent("models:presence:error")).toBe(false)
+	})
+})
+
+describe("a card's or a cast member's gallery and sprite replies (★cp-scope-1)", () => {
+	const OWNER_FAMILY = [
+		"characters:listGallery",
+		"characters:uploadGalleryImage",
+		"characters:deleteGalleryImage",
+		"characters:listSprites",
+		"characters:createSpriteSet",
+		"characters:updateSpriteSet",
+		"characters:deleteSpriteSet",
+		"characters:uploadSprite",
+		"characters:addStandardSprites",
+		"characters:updateSprite",
+		"characters:deleteSprite",
+		"characters:reorderSprites",
+		"characters:testSprite"
+	]
+
+	test("a card payload scopes on the card id, a member's on member:<id>, neither on nothing", () => {
+		for (const event of OWNER_FAMILY) {
+			expect(scopeOfPayload(event, { characterId: 7 }), event).toBe("7")
+			expect(scopeOfPayload(event, { castMemberId: 5 }), event).toBe(
+				"member:5"
+			)
+			expect(scopeOfPayload(event, { images: [] }), event).toBeNull()
+		}
+	})
+
+	test("one gallery and one sprite event, by name", () => {
+		expect(
+			scopeOfPayload("characters:listGallery", { castMemberId: 5 })
+		).toBe("member:5")
+		expect(
+			scopeOfPayload("characters:listSprites", { characterId: 9 })
+		).toBe("9")
 	})
 })

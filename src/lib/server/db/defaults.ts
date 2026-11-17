@@ -12,6 +12,7 @@ import { backfillMissingBindingNames } from "$lib/server/utils/characterBindingS
 import { backfillRelationshipHistoryEntries } from "$lib/server/utils/graphBackfill"
 import { mergeOllamaEmbeddingsType } from "$lib/server/connections/ollamaMultiModality"
 import { mergeOpenAIEmbeddingsType } from "$lib/server/connections/openAIMultiModality"
+import { ensureLocalOnnxConnections } from "$lib/server/connections/localOnnxConnections"
 import { foldKoboldCppManagedImage } from "$lib/server/connections/koboldCppManagedFold"
 import { refreshConnectionCapabilityCaches } from "$lib/server/connections/resolve"
 
@@ -200,6 +201,29 @@ export async function sync() {
 					"responseTokens",
 					"reasoning"
 				]
+			},
+			{
+				// The Reply loadout's sampling (`CORE_LOADOUTS`, ★47 ruled
+				// 2026-11-04): "a fresh install gets a reasoning-off dialogue
+				// sampling config at 1024+ tokens". `sampling-default`'s
+				// dialogue numbers (the shape's declared temperature, context
+				// 8192) with two changes only: 1024 response tokens, because
+				// 512 cuts a paragraph-long reply short, and `reasoning` ON so
+				// it resolves to the declared `off` — a reasoning trace is spent
+				// out of the same response budget the reply needs. Its own row
+				// rather than a retune of "Default" so an existing install's
+				// choice is untouched. The loadout points at it on INSERT only
+				// (`loadouts/seed.ts`): a fresh install gets it, an existing one
+				// gains the row and keeps its pick. NO `id`, per the rule above.
+				seedKey: "sampling-reply",
+				name: "Reply",
+				isImmutable: true,
+				shape: S.textGen,
+				values: {
+					contextTokens: 8192,
+					responseTokens: 1024
+				},
+				enabled: ["temperature", "responseTokens", "contextTokens", "reasoning"]
 			},
 			// ── Image presets: one per MODEL FAMILY ───────────────────────────
 			//
@@ -607,9 +631,10 @@ export async function sync() {
 		// **Sampling defaults may be seeded; connection defaults NEVER.** That is
 		// the general rule, and the image block this generalises already argued
 		// it for one capability: a sampling config is a shipped row this app
-		// wrote and can point at safely, while a connection is a thing only a
-		// person can add — so a capability with no connection must read as "not
-		// set up" rather than as a pointer to nothing. Seeding one would also
+		// wrote and can point at safely. The app adds connection rows of its own
+		// (managed KoboldCPP and audio.cpp, the two local ONNX rows below) but never
+		// points a default or loadout at one, so an unchosen capability reads as "not
+		// set up", not as a pointer to nothing. Seeding one would also
 		// re-create the auto-star by the back door, which is the behaviour the
 		// no-implicit-pickup ruling exists to delete.
 		//
@@ -642,9 +667,53 @@ export async function sync() {
 			"$lib/server/loadouts/fromConnectionDefaults"
 		)
 		await moveConnectionDefaultsToLoadouts(db)
+		// Then fold a pub default the one-shot minted onto the core loadout
+		// that has since shipped for its transform (Vision, 2026-11-10).
+		const { foldPubDefaultsOntoCore } = await import(
+			"$lib/server/loadouts/foldPubDefaults"
+		)
+		await foldPubDefaultsOntoCore(db)
+
+		// The voicebank's default voice, once the Narration loadout is
+		// synced (idempotent; boot never fails on it).
+		try {
+			const { ensureLoadoutVoice } = await import("$lib/server/speech/voicebank")
+			await ensureLoadoutVoice(db)
+		} catch (err) {
+			console.warn("[boot] voicebank default not seeded:", err)
+		}
+
+		// 🚧 Speech defaults (lane V finding V-1, 2026-10-29): Reply and Images
+		// are starred on a fresh pub, Narration and Transcription were not, so
+		// Read aloud read "Unavailable" until someone pressed Set as default.
+		// Star the shipped loadout by seed key ONLY when nothing is flagged
+		// for that transform; the pair is never written here, so a filled but
+		// unstarred Narration on an upgraded pub keeps its model.
+		try {
+			const { defaultLoadoutFor } = await import("$lib/server/loadouts")
+			const { sidesOf } = await import("$lib/shared/capabilities/sides")
+			const STARRED_BY_SEED: Record<string, string> = {
+				"text->audio": "core:loadout/tts@1",
+				"audio->text": "core:loadout/transcription@1"
+			}
+			for (const [transform, seedKey] of Object.entries(STARRED_BY_SEED)) {
+				if (await defaultLoadoutFor(db, transform)) continue
+				const { input, output } = sidesOf(transform as never)
+				await db
+					.update(schema.loadouts)
+					.set({ defaultForInput: input, defaultForOutput: output, updatedAt: new Date() })
+					.where(eq(schema.loadouts.seedKey, seedKey))
+			}
+		} catch (err) {
+			console.warn("[boot] speech default loadouts not starred:", err)
+		}
 
 		const SEEDED_SAMPLING_DEFAULTS: Record<string, string> = {
-			"text->text": "sampling-default",
+			// ★47 (2026-11-04): the Reply default's sampling is the Reply row.
+			// This TRUE-first-run registration writes the claimed Reply
+			// loadout's sampling, so it must name the same row the catalog does
+			// or it would overwrite the catalog's pointer with "Default".
+			"text->text": "sampling-reply",
 			"text->image": "sampling-image-default"
 		}
 		const { capabilityDefault, setCapabilityDefault } = await import(
@@ -677,6 +746,20 @@ export async function sync() {
 		}
 	} catch (error) {
 		console.error("Error syncing system settings:", error)
+	}
+
+	try {
+		// After the system-settings block, so an upgraded install's moved
+		// defaults already name their connections when the fold picks the kept
+		// row. `db` is passed in for the packaged-build reason given above
+		// (line ~538: a helper's own `defaultDb()` import can miss).
+		const onnx = await ensureLocalOnnxConnections(db)
+		if (onnx.created || onnx.folded || onnx.renamed)
+			console.log(
+				`[connections] Local ONNX connections: created ${onnx.created}, folded ${onnx.folded}, renamed ${onnx.renamed}.`
+			)
+	} catch (error) {
+		console.error("Error syncing local ONNX connections:", error)
 	}
 
 	try {
@@ -795,6 +878,21 @@ export async function sync() {
 		}
 	} catch (error) {
 		console.error("Error syncing servers:", error)
+	}
+
+	try {
+		// ⏳ 2026-11-05 (lane ed, plan §25): the retired `honorMode` key on
+		// sessions and core-owned presets becomes `keepEveryTurn` +
+		// `playerSheetLatitude`, once. Finds rows by the old key and drops it,
+		// so a settled install does no writes. Leaf module, `db` passed in.
+		const { retireHonorMode } = await import("$lib/server/sessions/honorModeRetired")
+		const retired = await retireHonorMode(db)
+		if (retired.sessions || retired.presets)
+			console.log(
+				`[sessions] Mapped the old Honour mode setting onto Keep every turn: ${retired.sessions} session(s), ${retired.presets} preset(s).`
+			)
+	} catch (e) {
+		console.warn("[boot] the old Honour mode setting was not mapped:", e)
 	}
 
 	const tables = [

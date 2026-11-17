@@ -42,7 +42,8 @@
  * 2026-09-24, §7): "now" still applies every dated amendment. The clock is what
  * `age` is measured against and what the prompt's current date says.
  */
-import { and, eq, inArray, or, sql, type SQL } from "drizzle-orm"
+import type { ClockTargetV1 } from "@serene-pub/contracts"
+import { and, eq, inArray, isNotNull, or, sql, type SQL } from "drizzle-orm"
 import { getAttributeSlot, i18nText, parseStoryTime, slotField } from "@serene-pub/sdk"
 import * as schema from "$lib/server/db/schema"
 import { attachedOrOwnBookOf, ownBookOf } from "$lib/server/lorebooks/ownBook"
@@ -54,6 +55,7 @@ import {
 	sessionReadingOf
 } from "$lib/server/state/reading"
 import { MAIN_LINE, type Line } from "$lib/shared/lorebooks/lineReading"
+import { memberFormOn } from "$lib/server/state/memberForm"
 import {
 	advanceStoryTime,
 	compareDates,
@@ -366,6 +368,9 @@ export async function sessionStoryNowOf(db: Db, sessionId: number): Promise<Stor
 	})
 }
 
+/** 🚧 Where a clock starts when its story has neither a clock nor a present: Year 1, month 1, day 1, 00:00. */
+const FIRST_STORY_DAY: StoryClock = { year: 1, month: 1, day: 1, hour: 0, minute: 0 }
+
 /** A refusal to move a session's clock, as a sentence a person can read. */
 export class StoryClockRefusal extends Error {}
 
@@ -373,10 +378,12 @@ export class StoryClockRefusal extends Error {}
  * **Advance a session's story clock** by `by` of `unit` (§5 `advance(n, unit)`):
  * through the book's calendar, by the smallest-part rule in a free-form book
  * (`advanceStoryTime`). A session with no clock of its own starts from its
- * line's present. Writes the session's clock only — never the book's.
+ * line's present; a story with neither a clock nor a present starts on its
+ * first day (`FIRST_STORY_DAY`) and the clock is stored. Writes the session's
+ * clock only — never the book's.
  *
- * Throws `StoryClockRefusal` — and writes nothing — with no book, no present
- * to start from, or a result that does not land.
+ * Throws `StoryClockRefusal` — and writes nothing — with no session or a
+ * result that does not land.
  */
 export async function advanceSessionStoryClock(
 	db: Db,
@@ -384,6 +391,73 @@ export async function advanceSessionStoryClock(
 	by: number,
 	unit: StoryTimeUnit
 ): Promise<{ clock: StoryClock; label: string; from: StoryClock }> {
+	const done = await moveSessionStoryClock(db, sessionId, () => ({ by, unit }))
+	return { clock: done.clock, label: done.label, from: done.from }
+}
+
+/**
+ * **Move a session's story clock to a moment of the day** (M0, lane T1;
+ * `advance-story-clock@1`'s `to`): `to` is read against the clock's start
+ * INSIDE the transaction — never a pre-read — and the move is by the
+ * minutes between them, so it is one ledger move that Back takes back.
+ * `next` (the default) is the coming `hour:minute`, tomorrow's when today's
+ * has passed; `tomorrow` is always tomorrow's; `today` is a no-op (`by: 0`, nothing
+ * written) when the clock stands at the moment and refused with a sentence when it is past it. A clock with
+ * no time of day reads as 00:00. Same refusals and locks as
+ * `advanceSessionStoryClock`. A story with no clock and no present starts on
+ * its first day (`FIRST_STORY_DAY`) and the clock is stored, as any later move
+ * from a present stores it (M1 E-fix T-4: a genre's create move set no clock,
+ * and every later move began from a dated entry's 00:00 instead); a move by an
+ * amount starts it the same way.
+ */
+export async function advanceSessionStoryClockTo(
+	db: Db,
+	sessionId: number,
+	to: ClockTargetV1
+): Promise<{ clock: StoryClock; label: string; from: StoryClock; by: number; unit: "minutes" }> {
+	const done = await moveSessionStoryClock(db, sessionId, (start) => {
+		const now = (start.hour ?? 0) * 60 + (start.minute ?? 0)
+		const target = to.hour * 60 + (to.minute ?? 0)
+		const d = target - now
+		const day = to.day ?? "next"
+		let by: number
+		if (day === "tomorrow") by = d + 1440
+		else if (day === "today") {
+			if (d === 0) return { by: 0, unit: "minutes", noop: true }
+			if (d < 0) {
+				const two = (n: number) => String(n).padStart(2, "0")
+				throw new StoryClockRefusal(
+					`The clock already stands at or past ${two(to.hour)}:${two(to.minute ?? 0)} today, and a clock target never moves it back.`
+				)
+			}
+			by = d
+		} else by = d > 0 ? d : d + 1440
+		return { by, unit: "minutes" }
+	})
+	return { ...done, unit: "minutes" }
+}
+
+/**
+ * Where a session's clock move starts: its own clock, else its line's present,
+ * else the story's first day. `present` is null when the first day is the
+ * start, so the caller knows the story had no clock. The one reader: the move
+ * itself and the dry run (`clockMoveProblem`) both ask here.
+ */
+export async function storyMoveStartOf(
+	db: Db,
+	sessionId: number,
+	row: ClockColumns
+): Promise<{ start: StoryClock; present: StoryClock | null }> {
+	const present =
+		clockOf(row) ?? (await sessionStoryNowOf(db, sessionId).then((n) => (n ? clockOfNow(n) : null)))
+	return { start: present ?? FIRST_STORY_DAY, present }
+}
+
+async function moveSessionStoryClock(
+	db: Db,
+	sessionId: number,
+	step: (start: StoryClock) => { by: number; unit: StoryTimeUnit; noop?: boolean }
+): Promise<{ clock: StoryClock; label: string; from: StoryClock; by: number; unit: StoryTimeUnit }> {
 	const found = await sessionStoryClockRow(db, sessionId)
 	if (!found) throw new StoryClockRefusal(`There is no session ${sessionId}.`)
 	// 🚧 pr-6 (§B-3a): no shared book — the session's own book.
@@ -405,13 +479,16 @@ export async function advanceSessionStoryClock(
 			throw new StoryClockRefusal(
 				"This session's lorebook changed while its clock was being advanced. Try again."
 			)
-		const start =
-			clockOf(row) ?? (await sessionStoryNowOf(tx, sessionId).then((n) => (n ? clockOfNow(n) : null)))
-		if (!start)
-			throw new StoryClockRefusal(
-				"This session's lorebook has no present to start from: nothing on its line is dated and no clock is set. Set the session's story clock first."
-			)
+		const { start, present } = await storyMoveStartOf(tx, sessionId, row)
 		const calendar = await bookCalendarOf(tx, lorebookId)
+		const planned = step(compactClock(start))
+		// 🚧 A `to` move that does not move (`today` at this very minute): nothing written.
+		if (planned.noop) {
+			// … but a clock that starts here is stored: the story has one from now on.
+			if (!present) await tx.update(schema.sessions).set(clockColumns(start)).where(eq(schema.sessions.id, sessionId))
+			return { clock: compactClock(start), label: formatDate(start, calendar), from: compactClock(start), by: 0, unit: planned.unit }
+		}
+		const { by, unit } = planned
 		const moved = advanceStoryTime(start, by, unit, calendar)
 		if (moved.problem !== undefined) throw new StoryClockRefusal(moved.problem)
 		const clock: StoryClock = {
@@ -422,7 +499,7 @@ export async function advanceSessionStoryClock(
 			minute: moved.time.minute ?? null
 		}
 		await tx.update(schema.sessions).set(clockColumns(clock)).where(eq(schema.sessions.id, sessionId))
-		return { clock: compactClock(clock), label: formatDate(clock, calendar), from: compactClock(start) }
+		return { clock: compactClock(clock), label: formatDate(clock, calendar), from: compactClock(start), by, unit }
 	})
 }
 
@@ -489,9 +566,9 @@ function compactClock(clock: StoryClock): StoryClock {
 
 /**
  * Every dated row in the book, named — what the preflight projects through a
- * proposed calendar: history entries, both amendment tables, branch fork
- * dates, presences (both ends), the clocks, and story-time stats
- * (`storyTimeStatRows`).
+ * proposed calendar: history entries, entry amendments and the cast members'
+ * dated versions, branch fork dates, presences (both ends), the clocks, and
+ * story-time stats (`storyTimeStatRows`).
  */
 export async function datedRowsOf(
 	db: Db,
@@ -523,7 +600,9 @@ export async function datedRowsOf(
 		.select()
 		.from(schema.entryAmendments)
 		.where(eq(schema.entryAmendments.lorebookId, lorebookId))
-	for (const a of entryAmendments)
+	for (const a of entryAmendments) {
+		// A held amendment is the session's own and may be undated: not a point on the book's clock.
+		if (a.base != null || a.year == null) continue
 		out.push({
 			key: `entryAmendment:${a.id}`,
 			label: `Amendment to “${titleOf.get(a.entryId) || `entry ${a.entryId}`}”`,
@@ -531,22 +610,39 @@ export async function datedRowsOf(
 			month: a.month,
 			day: a.day
 		})
+	}
 	const members = await db
 		.select({ id: schema.lorebookBindings.id, name: schema.lorebookBindings.name })
 		.from(schema.lorebookBindings)
 		.where(eq(schema.lorebookBindings.lorebookId, lorebookId))
 	const nameOf = new Map(members.map((m) => [m.id, m.name ?? ""]))
-	const castAmendments = await db
-		.select()
-		.from(schema.castAmendments)
-		.where(eq(schema.castAmendments.lorebookId, lorebookId))
-	for (const a of castAmendments)
+	// The members' dated cast versions, on any line. The old cast amendments
+	// are frozen and lifted into versions (listing both would show each
+	// change twice); the Changes list keeps its words.
+	const dated = await db
+		.select({
+			id: schema.characterVersions.id,
+			castMemberId: schema.characterVersions.castMemberId,
+			year: schema.characterVersions.year,
+			month: schema.characterVersions.month,
+			day: schema.characterVersions.day
+		})
+		.from(schema.characterVersions)
+		.where(
+			and(
+				eq(schema.characterVersions.lorebookId, lorebookId),
+				isNotNull(schema.characterVersions.castMemberId),
+				isNotNull(schema.characterVersions.year)
+			)
+		)
+		.orderBy(schema.characterVersions.id)
+	for (const v of dated)
 		out.push({
-			key: `castAmendment:${a.id}`,
-			label: `Amendment to ${nameOf.get(a.lorebookBindingId) || "a cast member"}`,
-			year: a.year,
-			month: a.month,
-			day: a.day
+			key: `castVersion:${v.id}`,
+			label: `Amendment to ${nameOf.get(v.castMemberId!) || "a cast member"}`,
+			year: v.year!,
+			month: v.month,
+			day: v.day
 		})
 	const presences = await db
 		.select()
@@ -659,7 +755,8 @@ async function storyTimeStatRows(
 	if (names.sessions.size)
 		held.push(
 			and(
-				inArray(v.ownerKind, ["session", "session_cast"]),
+				// 🚧 ⏳ Flip on (`memberForm.ts`): a seat's rows are `seated_member` / `player_seat`.
+				inArray(v.ownerKind, memberFormOn() ? ["session", "session_cast", "seated_member", "player_seat"] : ["session", "session_cast"]),
 				inArray(v.sessionId, [...names.sessions.keys()])
 			)!
 		)
@@ -692,7 +789,7 @@ async function storyTimeStatRows(
 						? `of ${names.places.get(row.ownerId) || "a place"}`
 						: row.ownerKind === "session_location"
 							? `of ${names.places.get(row.ownerId) || "a place"} in ${session}`
-							: row.ownerKind === "session_cast"
+							: row.ownerKind === "session_cast" || row.ownerKind === "seated_member" || row.ownerKind === "player_seat"
 								? `of a cast member in ${session}`
 								: `in ${session}`
 		out.push({ key: `stat:${row.id}`, label: `${stat} ${of}`, ...time })

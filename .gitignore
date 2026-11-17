@@ -79,3 +79,10 @@ release.keystore.base64
 .playwright-mcp/*
 # C7 gate pack goldens are ~190 MB each (computed-style exhibits); kept locally, never pushed
 /scripts/c7Gate/goldens/pack-*.json
+
+# archex project state
+.archex/
+plans/briefs/BRIEF-sense-sum-w1.md
+plans/briefs/BRIEF-sense-sum-w2.md
+plans/briefs/BRIEF-sense-sum-w3.md
+plans/briefs/BRIEF-sense-sum-w4.md

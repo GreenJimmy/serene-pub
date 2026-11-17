@@ -17,7 +17,9 @@
 	 * Read the unions for the wire itself; what follows is only this host's
 	 * side of it. No frame is a widget (the `surface` shortcut retired
 	 * 2026-10-02), so none is sent widget data — no `settings`, `layout`,
-	 * `scoped` or `grants`. A page frame gets the theme and the language; a
+	 * `scoped` or `grants` — except one: a session-view frame of a genre that
+	 * declares a lorebook is passed the `lore` section (`scoped`, `grants`;
+	 * SHAPES L8). A page frame gets the theme and the language; a
 	 * session-view frame also gets the session, its messages, the session's
 	 * `actions` and its `event`s; a document inside a component (`sp-frame`,
 	 * surface `panel`) gets the `props` its component passes.
@@ -47,14 +49,16 @@
 	 * targetOrigin — which is safe *because* the channel port rides the
 	 * message: only the document inside this exact frame receives it.
 	 */
-	import { onDestroy } from "svelte"
+	import { getContext, onDestroy, untrack } from "svelte"
 	import * as Icons from "@lucide/svelte"
-	import type { SessionV1 } from "@serene-pub/sdk"
+	import type { FrontEndMount, SessionV1 } from "@serene-pub/sdk"
 	import type { ActionsV1, WidgetEventSource } from "$lib/shared/widgets/context"
 	import type { ActionDispatch } from "$lib/shared/widgets/invokeAction"
 	import { frameInvokeVerdict, hasRecentActivation } from "./frameActivation"
 	import { frameOwnerOf } from "./frameOwner"
+	import { FRAME_FATAL_SENTENCE } from "./frameFatal"
 	import { frameStateKey, initMessage } from "./framePort"
+	import { frameAssetsBaseOf } from "./frameOwner"
 	import { createWidgetWire, type WireInputs } from "./widgetWire.svelte"
 
 	interface Props {
@@ -107,6 +111,27 @@
 			action?: string,
 			blockId?: string
 		) => void
+		/** 🚧 M0 (L8): a session-view frame of a genre that declares a lorebook: the `lore` section. */
+		scoped?: WireInputs["scoped"]
+		/**
+		 * 🚧 M0 (L8): a session-view frame of a genre that declares a lorebook: `["lore"]`, so the wire posts the section.
+		 * 🚧 M1 fix: plus `channel:<slug>:write` on each of the session's channels (`sessionViewHanded`).
+		 */
+		grants?: WireInputs["grants"]
+		/** 🚧 M1 fix: a session-view frame writes its own lines (`send`) to these channels as the viewer (`sessionViewHanded`). */
+		writeChannels?: WireInputs["writeChannels"]
+		/**
+		 * 🚧 M2b/M2c: the front-end APIs this mount holds (`ui` · `session` · `applet`). Absent: a widget or session view
+		 * in a session (`ui` + `session`). An applet's launcher, mounted without a session: `["ui", "applet"]`; a plugin
+		 * page (`/x/…`): `["ui"]`.
+		 */
+		apis?: WireInputs["apis"]
+		/** 🚧 M2d: the frame said `ready` on its current port (once per boot); carries nothing. */
+		onready?: () => void
+		/** 🚧 M2d: the frame reported a `fatal` error. Carries no text: the frame's own words never reach the app's UI. */
+		onfatal?: () => void
+		/** 🚧 m3: said in `init` — true on a session page, false for an applet's launcher; absent elsewhere. */
+		inSession?: boolean
 		class?: string
 	}
 
@@ -122,12 +147,21 @@
 		onInvoke,
 		source,
 		onAction,
+		scoped,
+		grants,
+		writeChannels,
+		apis,
+		onready,
+		onfatal,
+		inSession,
 		class: klass = ""
 	}: Props = $props()
 
 	let frame = $state<HTMLIFrameElement | null>(null)
 	/** Whose document this is — the plugin id its `/plugin-ui/<id>/…` address names, never `core`. */
 	const frameOwner = $derived(frameOwnerOf(src))
+	/** 🚧 M2c: what this frame is mounted as — the front-end API's asker, and `init`'s `mount`. */
+	const mount = $derived<FrontEndMount>(surface === "page" ? "page" : apis?.includes("applet") ? "applet" : "widget")
 
 	/**
 	 * What a `fatal` error said, once one has been reported — the flag the
@@ -194,7 +228,13 @@
 			owner: frameOwner,
 			actionDispatch,
 			onInvoke,
-			onAction
+			onAction,
+			scoped,
+			grants,
+			writeChannels,
+			apis,
+			// 🚧 M2c: what is asking, for the front-end API's refusal sentences
+			mount
 		}),
 		label: () => `PluginFrame "${title}" (${src})`,
 		gate: (action) =>
@@ -207,8 +247,18 @@
 				userActivationActive: navigator.userActivation?.isActive,
 				frameIsActiveElement: !!frame && document.activeElement === frame
 			}),
-		onFatal: (message) => (fatal = message)
+		onFatal: (message) => {
+			fatal = message
+			onfatal?.()
+		}
 	})
+
+	// 🚧 M2d: `ready` is the wire's own state; the callback only reports it.
+	$effect(() => {
+		if (wire.ready) untrack(() => onready?.())
+	})
+
+	const panelsCtx = getContext<PanelsCtx | undefined>("panelsCtx")
 
 	function handleLoad() {
 		// A fresh channel per document load — a reloaded frame must never
@@ -220,7 +270,7 @@
 		// `initMessage`, which carries `FRAME_PROTOCOL` and never a literal.
 		// The post targets `"*"` by necessity — an opaque origin matches no
 		// targetOrigin — safe because the port rides the message.
-		frame?.contentWindow?.postMessage(initMessage(surface), "*", [channel.port2])
+		frame?.contentWindow?.postMessage(initMessage(surface, frameAssetsBaseOf(src), !!panelsCtx?.fullscreen, mount, inSession), "*", [channel.port2])
 	}
 
 	onDestroy(() => wire.detach())
@@ -233,11 +283,13 @@
      unmounted — unmounting it would reload the document on the next render, and a
      surface that crash-loops is worse than one that says so once. -->
 <div class="relative h-full w-full">
+	<!-- The grant is the document's: the server answers `Permissions-Policy: autoplay=()` without `media:autoplay`. -->
 	<iframe
 		bind:this={frame}
 		{src}
 		{title}
 		sandbox="allow-scripts"
+		allow="autoplay"
 		class="h-full w-full border-0 {klass}"
 		onload={handleLoad}
 		onfocus={touched}
@@ -253,11 +305,7 @@
 			role="alert"
 		>
 			<Icons.TriangleAlert size={20} class="text-error-600-400" />
-			<p class="text-surface-600-400 max-w-xs text-xs">
-				This surface stopped and can't show anything. Reload the page to
-				try it again — the extension's own message is in the browser
-				console.
-			</p>
+			<p class="text-surface-600-400 max-w-xs text-xs">{FRAME_FATAL_SENTENCE}</p>
 		</div>
 	{/if}
 </div>

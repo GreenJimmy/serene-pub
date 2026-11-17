@@ -145,6 +145,17 @@ export function isKoboldCppManagedType(
 	return !!type && KOBOLDCPP_MANAGED_TYPES.includes(type)
 }
 
+/** 🚧 The connection types of audio.cpp, run by Serene Pub. Never created from the New Connection picker. */
+export const AUDIOCPP_MANAGED_TYPES: readonly string[] = [
+	CONNECTION_TYPE.AUDIOCPP_MANAGED
+]
+
+export function isAudioCppManagedType(
+	type: string | null | undefined
+): boolean {
+	return !!type && AUDIOCPP_MANAGED_TYPES.includes(type)
+}
+
 export const CATEGORY_ORDER: ConnectionServiceCategory[] = [
 	"cloud",
 	"local",
@@ -195,6 +206,8 @@ export function serviceSetupNeed(service: {
 	// A host this pub only talks to, though it runs on the person's machine:
 	// its address is the whole setup (DESIGN-image-generation §4.9).
 	if (service.type === CONNECTION_TYPE.COMFYUI) return "address"
+	// Same: an audio.cpp server Serene Pub does not run — address only.
+	if (service.type === CONNECTION_TYPE.AUDIOCPP) return "address"
 	if (service.category === "local") return "local"
 	return "address"
 }
@@ -259,6 +272,12 @@ export function buildConnectionServiceItems(
 		// (src/lib/server/sockets/koboldcpp.ts), same reasoning
 		// /document-view/connections/new already excludes them for.
 		if (isKoboldCppManagedType(t.value)) continue
+		// audio.cpp, run by Serene Pub: same reasoning (🚧 provisional).
+		if (isAudioCppManagedType(t.value)) continue
+		// The two local ONNX connections are Serene Pub's own, one per type, made
+		// at boot (`ensureLocalOnnxConnections`, owner 2026-11-04); `connections:create`
+		// refuses a second, so the picker offers neither.
+		if (t.value === "local-onnx" || t.value === "local-onnx-ner") continue
 		// Merged into `ollama` (owner ruling 2026-09-25): one Ollama connection
 		// per host serves every modality it has, and the boot sync renames any
 		// old row. Its option entry stays so a straggler still has a label.

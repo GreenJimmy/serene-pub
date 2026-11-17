@@ -155,6 +155,51 @@ export const DATA_UPGRADES: DataUpgrade[] = [
 	{
 		afterMigration: "0128_pr6s2_core_annex",
 		load: () => import("./0128_pr6s2_core_annex")
+	},
+	// 🚧 M0 (P2): plugin files over 64 KB move to disk (plugin-files-to-disk).
+	{
+		afterMigration: "0130_m0_sdk_gaps",
+		load: () => import("./0130_m0_sdk_gaps")
+	},
+	// 🚧 Voice loadouts: each voicebank entry gets the loadout it speaks through.
+	{
+		afterMigration: "0135_voicebank_loadout",
+		load: () => import("./0135_voicebank_loadout")
+	},
+	// 🚧 Narration fallback: the voicebank stars move onto their loadout's voice.
+	{
+		afterMigration: "0137_loadout_voices",
+		load: () => import("./0137_loadout_voices")
+	},
+	// 🚧 M2b (a8 ruling): annex document versions leave core's runtime key for `sessions.annex_versions`.
+	{
+		afterMigration: "0139_m2b_permission_model",
+		load: () => import("./0139_m2b_permission_model")
+	},
+	// 🚧 ★4b: stored `Scene N …` names are marked default, numbered at render from now on.
+	{
+		afterMigration: "0142_scenes_unfiled_default_names",
+		load: () => import("./0142_scenes_unfiled_default_names")
+	},
+	// 🚧 Show advanced controls (2026-11-10, ★B): users with all character fields shown get advanced controls on.
+	{
+		afterMigration: "0149_familiar_silk_fever",
+		load: () => import("./0149_familiar_silk_fever")
+	},
+	// 🚧 Variable layouts (2026-11-10): per-step picks move onto the pub's layout and the presets' variable layouts, no prompt changing.
+	{
+		afterMigration: "0151_shallow_marvel_zombies",
+		load: () => import("./0151_shallow_marvel_zombies")
+	},
+	// 🚧 Benched seats (2026-11-10): removed seats with lines become benched; unused ones stay removed.
+	{
+		afterMigration: "0152_overjoyed_magik",
+		load: () => import("./0152_overjoyed_magik")
+	},
+	// 🚧 ST3 (2026-11-11, "Move to columns"): core's runtime keys leave the `core` annex document for columns; seat benches, conversions and annex deltas become session imprints.
+	{
+		afterMigration: "0155_chubby_lockjaw",
+		load: () => import("./0155_chubby_lockjaw")
 	}
 ]
 

@@ -40,7 +40,6 @@ import {
 	useTypedSocket,
 	type TypedSocket
 } from "$lib/client/sockets/typedSocket"
-import { toaster } from "$lib/client/utils/toaster"
 import { notify } from "$lib/client/utils/notify"
 import { CONNECTION_TYPE } from "$lib/shared/constants/ConnectionTypes"
 import { defaultLoadoutName } from "$lib/shared/loadouts/defaultLoadoutName"
@@ -221,7 +220,7 @@ export function createConnections(deps: ConnectionsDeps) {
 			const name =
 				list.find((c) => c.id === r.connectionId)?.name ??
 				"the connection"
-			toaster.warning({
+			notify.warning({
 				title: `Couldn't list models for ${name}`,
 				description: r.error
 			})
@@ -261,7 +260,10 @@ export function createConnections(deps: ConnectionsDeps) {
 		baseUrl?: string | null
 	}): boolean {
 		const kind = endpointKind(target.type)
-		const managed = kind === "koboldcpp-managed" || kind === "ollama"
+		const managed =
+			kind === "koboldcpp-managed" ||
+			kind === "audiocpp-managed" ||
+			kind === "ollama"
 		const row = list.find((c) => c.id === target.id)
 		const keyMissing = !!row && needsCredential(row)
 		const addressMissing =
@@ -297,7 +299,7 @@ export function createConnections(deps: ConnectionsDeps) {
 			createNameKey(msg.connection.name)
 		)
 		if (mine) {
-			toaster.success({ title: "Connection created" })
+			notify.success({ title: "Connection created" })
 			announce(`New connection ${msg.connection?.name} has been created`)
 		}
 		for (const listener of created) listener(msg, { mine })
@@ -339,7 +341,7 @@ export function createConnections(deps: ConnectionsDeps) {
 	 * The choice waiting on its replies, so it is said ONCE: one toast when
 	 * the last of its moves lands, however many jobs it named. Not $state.
 	 */
-	let pendingChoice: { sentence: string; waiting: Set<string> } | null = null
+	let pendingChoice: { sentence: string; waiting: Set<string>; note?: string } | null = null
 
 	/**
 	 * THE way a model becomes the one a job — or several jobs — uses.
@@ -409,9 +411,14 @@ export function createConnections(deps: ConnectionsDeps) {
 			}
 		}
 		// Said once per choice, when its last move lands (`chooseJobModel`).
+		// An image pair's sampling note rides along as the second line.
+		if (msg.samplingNote && pendingChoice) pendingChoice.note = msg.samplingNote
 		if (msg.id && pendingChoice?.waiting.delete(msg.capability)) {
 			if (!pendingChoice.waiting.size) {
-				toaster.success({ title: pendingChoice.sentence })
+				notify.success({
+					title: pendingChoice.sentence,
+					...(pendingChoice.note ? { description: pendingChoice.note } : {})
+				})
 				pendingChoice = null
 			}
 		}

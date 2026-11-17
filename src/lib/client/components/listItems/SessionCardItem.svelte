@@ -7,6 +7,7 @@
 	import { lastActivityAt, timeAgoShort } from "$lib/client/utils/timeAgo"
 	import { statusText } from "$lib/client/i18n/state.svelte"
 	import type { StatusText } from "@serene-pub/sdk"
+	import { seatCardsAsShown } from "$lib/client/components/sessionPage/projections/characters"
 
 	/**
 	 * A session as a card, for the Sessions view's card mode (notes 36,
@@ -45,11 +46,8 @@
 		runStatus
 	}: Props = $props()
 
-	const cast = $derived(
-		(session.sessionCharacters || [])
-			.map((sc) => sc.character)
-			.filter(Boolean)
-	)
+	// Each seated card as its cast member shows it: its name and face.
+	const cast = $derived(seatCardsAsShown(session))
 	const coverSrc = $derived(avatarSrc(cast[0], { full: true }))
 	const isGroup = $derived(cast.length > 1)
 	const name = $derived(session.name || "Untitled Session")
@@ -71,7 +69,7 @@
 <!-- Selection is a RING, as on a character card: the selected row's inset
      bar would sit under the cover. -->
 <div
-	class="group bg-surface-100-900 panel-edge relative flex h-full flex-col overflow-hidden rounded-container border transition-shadow hover:shadow-lg {active
+	class="group bg-surface-100-900 relative flex h-full flex-col overflow-hidden rounded-container transition-shadow hover:shadow-lg {active
 		? 'ring-primary-500 ring-offset-surface-50-950 ring-2 ring-offset-2'
 		: ''}"
 	role="listitem"

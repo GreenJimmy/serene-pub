@@ -106,7 +106,8 @@
 	 */
 	const noSeatReason = (channel?: string): string => {
 		const shut = composerClosedOn(closedComposers, channel ?? "main")
-		return shut ? composerClosedPlaceholder(shut) : NO_PERSONA
+		if (shut) return composerClosedPlaceholder(shut)
+		return data.benchedOnlyReason ?? NO_PERSONA
 	}
 	/** A member's Continue before they have moved (the server's `sentSinceReply`). */
 	const NOT_YOUR_CONTINUE = "send your line first"
@@ -203,6 +204,7 @@
 	<SessionBanners
 		typing={[...data.typingPersonas.values()]}
 		showTyping={!data.modeMissing && !data.composerHidden}
+		speaking={data.speakingNames}
 	/>
 {/snippet}
 

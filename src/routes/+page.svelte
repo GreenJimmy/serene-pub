@@ -15,6 +15,7 @@
 	import { wizardStart } from "$lib/client/wizard/wizardStart"
 	import {
 		characterPickOptions,
+		characterStepOffers,
 		personaPickExcludes,
 		pickedRow
 	} from "$lib/client/wizard/wizardPicks"
@@ -22,13 +23,24 @@
 		quickPersonaCharacter,
 		quickPersonaName
 	} from "$lib/client/wizard/quickPersona"
+	import {
+		STARTER_CHARACTER,
+		isStarterCharacterRow,
+		starterCharacterCreate
+	} from "$lib/shared/characters/starterCharacter"
 	import { wizardCharacterStep } from "$lib/client/wizard/wizardCharacterStep.svelte"
 	import { isAwaitingUser } from "$lib/client/sessions/sessionGroups"
+	import {
+		seatCardAsShown,
+		seatCardsAsShown
+	} from "$lib/client/components/sessionPage/projections/characters"
 	import Avatar from "$lib/client/components/Avatar.svelte"
 	import AvatarStack from "$lib/client/components/AvatarStack.svelte"
 	import BetaNotice from "$lib/client/components/BetaNotice.svelte"
 	import MetaLine from "$lib/client/components/panels/MetaLine.svelte"
 	import ListCardToggle from "$lib/client/components/panels/ListCardToggle.svelte"
+	import AppletCard from "$lib/client/components/AppletCard.svelte"
+	import { appletRows } from "$lib/client/sessions/appletRows"
 	import { createViewMode } from "$lib/client/utils/viewMode.svelte"
 	import CharacterCreator from "$lib/client/components/modals/CharacterCreatorModal.svelte"
 	import CharacterSelectModal from "$lib/client/components/modals/CharacterSelectModal.svelte"
@@ -45,7 +57,7 @@
 	import { useTypedSocket } from "$lib/client/sockets/loadSockets.client"
 	import { getInterestContext } from "$lib/client/sockets/interest.svelte"
 	import type { SocketEventMap } from "$lib/client/sockets/typedSocket"
-	import { toaster } from "$lib/client/utils/toaster"
+	import { notify } from "$lib/client/utils/notify"
 	import {
 		CONNECTIONS_CONTEXT,
 		type ConnectionsCtx
@@ -54,6 +66,7 @@
 	import { refusedSwapsSentence } from "$lib/client/components/sessionForms/refusedSwaps"
 	import { CONNECTION_TYPE } from "$lib/shared/constants/ConnectionTypes"
 	import { modalityOfTransform } from "$lib/shared/constants/connectionSections"
+	import { modelKindsAllow } from "$lib/shared/connections/modelKinds"
 	import { enableManager } from "$lib/client/components/connections/managers"
 	import { enableAccessibility } from "$lib/client/accessibility/state.svelte"
 	import { avatarSrc } from "$lib/client/utils/media"
@@ -183,6 +196,10 @@
 	let startingSession = $state(false)
 	/** "Just call me …" was pressed; its create reply selects the row. */
 	let awaitingQuickPersona = false
+	/** The starter character was pressed; its create reply selects the row. */
+	let starterCharacterPending = $state(false)
+	/** Why the starter's create was refused, shown under its card (no toast: Layout leaves `characters:create:error` to whoever sent it). */
+	let starterCharacterRefusal: string | null = $state(null)
 
 	// Card import state
 	let wizardImportingCharacterCard = $state(false)
@@ -311,14 +328,23 @@
 		capability: string
 	): boolean {
 		if (!modelServes(connectionId, modelId, capability)) return false
-		const need = modalityOfTransform(capability)
-		if (need == null) return true
+		if (modalityOfTransform(capability) == null) return true
 		const model = connections
 			.find((c) => c.id === connectionId)
 			?.models?.find((m: { id: number }) => m.id === modelId) as
-			| { modality?: string | null }
+			| {
+					modality?: string | null
+					reads?: string[] | null
+					writes?: string[] | null
+			  }
 			| undefined
-		return model?.modality === need
+		// Set-based, not "modality equals the transform's": an `asr` row reads
+		// audio and writes text, which `modalityOfTransform("audio->text")`
+		// (keyed by output side) would never equal (lane V V-7, 2026-10-29).
+		return (
+			model?.modality != null &&
+			modelKindsAllow(model, capability, modalityOfTransform)
+		)
 	}
 
 	/**
@@ -415,6 +441,16 @@
 	// standing key only answers the "Just call me …" persona, which is
 	// created straight from this page with no modal in between.
 	function handleCharacterCreated(res: Sockets.Characters.Create.Response) {
+		// The starter character's create selects it on the Character step.
+		if (
+			starterCharacterPending &&
+			res.character?.id != null &&
+			isStarterCharacterRow(res.character)
+		) {
+			starterCharacterPending = false
+			selectedCharacterId = res.character.id
+			return
+		}
 		if (!awaitingQuickPersona || !res.character?.id) return
 		awaitingQuickPersona = false
 		selectedPersonaId = res.character.id
@@ -520,17 +556,16 @@
 	 * matches the session header's.
 	 */
 	function castStack(session: SessionListRow) {
-		const cast = (session.sessionCharacters ?? [])
-			.map((sc) => sc.character)
-			.filter(Boolean)
-		return { members: cast }
+		return { members: seatCardsAsShown(session) }
 	}
 
 	/**
 	 * "Story · 2 hours ago" — the genre and when the last line landed, as a
 	 * meta line's facts (the line joins them and drops an empty genre).
 	 */
-	function sessionMeta(session: SessionListRow): (string | undefined | null)[] {
+	function sessionMeta(
+		session: SessionListRow
+	): (string | undefined | null)[] {
 		return [session.genreName, timeAgo(new Date(lastActivityAt(session)))]
 	}
 
@@ -540,7 +575,10 @@
 	 * shelf behind the list/card pair. Remembered per browser, apart from
 	 * the Characters view's own choice.
 	 */
-	const homeCharactersMode = createViewMode("serene-pub:viewMode:home", "list")
+	const homeCharactersMode = createViewMode(
+		"serene-pub:viewMode:home",
+		"list"
+	)
 
 	/** How many characters the list shows before "New or import": 3 rows of 2. */
 	const HOME_LIST_COUNT = 5
@@ -612,7 +650,12 @@
 		if (!last.isUser) return "Your turn"
 		const cast = session.sessionCharacters ?? []
 		if (cast.length === 1) {
-			const name = resolveCharacterName(cast[0].character, "")
+			const name = resolveCharacterName(
+				cast[0].character
+					? seatCardAsShown(session, cast[0].character)
+					: cast[0].character,
+				""
+			)
 			if (name) return `${name} is up next`
 		}
 		return "Waiting on the model"
@@ -915,7 +958,9 @@
 	 * and Or set one up drops its own Ollama card while this is set.
 	 */
 	let foundOllama = $derived.by(
-		() => localProviders?.find((p) => p.type === CONNECTION_TYPE.OLLAMA) ?? null
+		() =>
+			localProviders?.find((p) => p.type === CONNECTION_TYPE.OLLAMA) ??
+			null
 	)
 
 	/** The managed Ollama road: Serene Pub downloads models into it. */
@@ -938,7 +983,7 @@
 	let wizardName = $state("")
 
 	/** Saves the welcome name, and toasts a refusal that lands after the wizard moved on. */
-	const welcomeName = welcomeNameSaver(socket, (t) => toaster.error(t))
+	const welcomeName = welcomeNameSaver(socket, (t) => notify.error(t))
 
 	/**
 	 * The name given at Get started, kept after the field is cleared: the
@@ -1045,6 +1090,10 @@
 	 */
 	let wizardCharacters = $derived(
 		characterPickOptions(sortedCharacters, selectedPersonaId)
+	)
+	/** What the Character step offers, starter first (`characterStepOffers`). */
+	let characterOffers = $derived(
+		characterStepOffers(sortedCharacters, selectedPersonaId)
 	)
 	/** The Character step's row once chosen; null shows Choose a character. */
 	let chosenCharacter = $derived(
@@ -1218,6 +1267,28 @@
 		})
 	}
 
+	/**
+	 * The starter character, created only now, for this person, by the
+	 * ordinary `characters:create`; the reply selects it
+	 * (`handleCharacterCreated`).
+	 */
+	function pickStarterCharacter() {
+		if (starterCharacterPending) return
+		starterCharacterRefusal = null
+		starterCharacterPending = true
+		socket.emit("characters:create", {
+			character: starterCharacterCreate()
+		})
+	}
+
+	/** The starter's create was refused: say so under its card. */
+	function handleStarterCharacterRefused(res: Sockets.ErrorResponse) {
+		if (!starterCharacterPending) return
+		starterCharacterPending = false
+		starterCharacterRefusal =
+			res?.error || t("Couldn't add this character. Try again.")
+	}
+
 	function createSamplePersona() {
 		// A persona is a character: one create, with the two flags on the row.
 		// The server applies the default in its own transaction; the reply
@@ -1234,7 +1305,7 @@
 		// The server's own ceiling, said before a byte is uploaded.
 		const upload = await cardFileForUpload(details.files[0])
 		if ("refused" in upload) {
-			toaster.error({ title: upload.refused })
+			notify.error({ title: upload.refused })
 			return
 		}
 		wizardImportingCharacterCard = true
@@ -1245,7 +1316,7 @@
 		if (!details.files || details.files.length === 0) return
 		const upload = await cardFileForUpload(details.files[0])
 		if ("refused" in upload) {
-			toaster.error({ title: upload.refused })
+			notify.error({ title: upload.refused })
 			return
 		}
 		wizardImportingPersonaCard = true
@@ -1323,6 +1394,8 @@
 	 * start screen would.
 	 */
 	let sessionGenres: Sockets.Sessions.Genres.Response["genres"] = $state([])
+	// 🚧 M2d: the applets Home lists (the Apps section); none, no section.
+	const homeApplets = $derived(appletRows(sessionGenres as never))
 	let sessionPresets: Sockets.SessionAdmin.PresetRow[] = $state([])
 
 	$effect(() =>
@@ -1354,7 +1427,10 @@
 	function handleDiscoverLocal(
 		res: SocketEventMap["connections:discoverLocal"]["response"]
 	) {
-		localProviders = res.providers ?? []
+		// Set up chat offers chat servers only: audio.cpp answers speech.
+		localProviders = (res.providers ?? []).filter(
+			(p) => p.type !== CONNECTION_TYPE.AUDIOCPP
+		)
 		// A found server's road re-reads its card, so "Check again" there
 		// shows the model just loaded.
 		if (detectedProvider) {
@@ -1434,7 +1510,7 @@
 			socket.emit("connectionDefaults:list", {})
 			// Toasted once, by the connections context (`expectCreate`).
 			if (!conns)
-				toaster.success({
+				notify.success({
 					title: "Connection created",
 					description: `Connected to ${res.connection.name}`
 				})
@@ -1456,7 +1532,7 @@
 		if (res.session) {
 			const refused = refusedSwapsSentence(res)
 			if (refused)
-				toaster.warning({
+				notify.warning({
 					title: "Some settings were not applied",
 					description: refused
 				})
@@ -1468,9 +1544,10 @@
 		releaseWizardCreate?.()
 		releaseWizardCreate = null
 		startingSession = false
-		toaster.error({
+		notify.error({
 			title: "Could not start the session",
-			description: res?.error || "The server refused the request."
+			description: res?.error || "The server refused the request.",
+			source: "socket:sessions:create:error"
 		})
 	}
 
@@ -1533,7 +1610,9 @@
 	 *
 	 * `characters:create` is a standing key: the creator modals send their
 	 * own creates, and this page's only one is the "Just call me …"
-	 * persona, whose reply selects it on the wizard's persona step.
+	 * persona, whose reply selects it on the wizard's persona step. The
+	 * `:error` half answers the starter card's create, shown inline under
+	 * the card.
 	 * `characters:importCard` IS a reply, to the dropzone emits in
 	 * `handleCharacterCardImport` / `handlePersonaCardImport` (one family: a
 	 * persona is a character), and its `:error` half is never gated (plan
@@ -1553,6 +1632,10 @@
 	interest.useInterest<"characters:create">(
 		"characters:create",
 		handleCharacterCreated
+	)
+	interest.useInterest<"characters:create:error">(
+		"characters:create:error",
+		handleStarterCharacterRefused
 	)
 	// The import events are the characters-import context's; this page takes
 	// the outcome for the wizard's selection.
@@ -1759,7 +1842,7 @@
 							{@const hint = turnHint(session)}
 							{@const last = session.lastMessage}
 							<div
-								class="bg-surface-50-950 border-surface-200-800 flex min-w-0 flex-col gap-3 rounded-[14px] border p-4"
+								class="bg-surface-50-950 flex min-w-0 flex-col gap-3 rounded-[14px] p-4"
 							>
 								<div class="flex min-w-0 items-center gap-3">
 									{#if stack.members.length > 0}
@@ -1777,12 +1860,14 @@
 										>
 											{session.name || "Untitled session"}
 										</span>
-										<MetaLine items={sessionMeta(session)} />
+										<MetaLine
+											items={sessionMeta(session)}
+										/>
 									</div>
 								</div>
 								{#if last?.excerpt}
 									<p
-										class="text-surface-800-200 line-clamp-3 [font-family:var(--sp-prose)] text-lead leading-[1.55]"
+										class="text-surface-800-200 text-lead line-clamp-3 [font-family:var(--sp-prose)] leading-[1.55]"
 									>
 										{#if last.speakerName}
 											<span
@@ -1837,13 +1922,46 @@
 					</div>
 				{:else}
 					<div
-						class="bg-surface-50-950 border-surface-200-800 text-surface-600-400 rounded-[14px] border px-5 py-6 text-sm"
+						class="bg-surface-50-950 text-surface-600-400 rounded-[14px] px-5 py-6 text-sm"
 					>
 						Nothing on tonight. Start a session and it will be here
 						tomorrow.
 					</div>
 				{/if}
 			</section>
+
+			<!-- 🚧 M2d: Apps — the applet cards, only while at least one applet
+			     is listed (never an empty state on Home). -->
+			{#if homeApplets.length > 0}
+				<section
+					class="flex flex-col gap-3.5"
+					aria-labelledby="home-apps"
+				>
+					<h2
+						id="home-apps"
+						class="[font-family:var(--typo-heading--font-family)] text-base font-semibold"
+					>
+						Apps
+					</h2>
+					<ul
+						class="grid grid-cols-1 gap-3 @min-[640px]/home:grid-cols-2 @min-[900px]/home:grid-cols-3"
+					>
+						{#each homeApplets as app (app.pluginId)}
+							<li>
+								<AppletCard
+									pluginId={app.pluginId}
+									from="home"
+									title={app.title}
+									poster={app.poster}
+									logo={app.logo}
+									blurb={app.blurb}
+									genres={app.genres.map((g) => g.name)}
+								/>
+							</li>
+						{/each}
+					</ul>
+				</section>
+			{/if}
 
 			<!-- ── characters ─────────────────────────────────────────
 			     A two-column list of faces by default (PLAN-0-5-polish-parity
@@ -1857,7 +1975,10 @@
 			     grows a scrollbar (principle 6) and never shows half a card. The
 			     last cell is always "New or import"; the header's "All N" is the
 			     way to everyone else. -->
-			<section class="flex flex-col gap-3.5" aria-labelledby="home-characters">
+			<section
+				class="flex flex-col gap-3.5"
+				aria-labelledby="home-characters"
+			>
 				<div class="flex items-center justify-between gap-4">
 					<h2
 						id="home-characters"
@@ -1879,7 +2000,10 @@
 								All {characters.length}
 							</button>
 						{/if}
-						<ListCardToggle mode={homeCharactersMode} label="Characters" />
+						<ListCardToggle
+							mode={homeCharactersMode}
+							label="Character cards"
+						/>
 					</div>
 				</div>
 				{#if homeCharactersMode.value === "list"}
@@ -1891,13 +2015,17 @@
 							{@const tagline = characterTagline(character)}
 							<button
 								type="button"
-								class="bg-surface-50-950 border-surface-200-800 hover:border-surface-300-700 flex min-h-11 min-w-0 items-center gap-3 rounded-base border px-3 py-2.5 text-left transition-colors"
+								class="bg-surface-50-950 hover:bg-surface-200-800 rounded-base flex min-h-11 min-w-0 items-center gap-3 px-3 py-2.5 text-left transition-colors"
 								title="Go to character sessions"
 								onclick={() => openCharacterSessions(character)}
 							>
 								<Avatar char={character} size="md" decorative />
-								<span class="flex min-w-0 flex-1 flex-col gap-0.5">
-									<span class="truncate text-lead font-medium">
+								<span
+									class="flex min-w-0 flex-1 flex-col gap-0.5"
+								>
+									<span
+										class="text-lead truncate font-medium"
+									>
 										{character.nickname ||
 											character.name ||
 											"Unknown"}
@@ -1910,7 +2038,7 @@
 						{/each}
 						<button
 							type="button"
-							class="border-surface-300-700 hover:border-surface-600 flex min-h-11 min-w-0 items-center gap-3 rounded-base border border-dashed px-3 py-2.5 text-left transition-colors"
+							class="border-surface-300-700 hover:border-surface-600 rounded-base flex min-h-11 min-w-0 items-center gap-3 border border-dashed px-3 py-2.5 text-left transition-colors"
 							onclick={() => openViewToCreate("characters")}
 						>
 							<span
@@ -1921,7 +2049,7 @@
 							</span>
 							<span class="flex min-w-0 flex-1 flex-col gap-0.5">
 								<span
-									class="text-surface-800-200 truncate text-lead font-medium"
+									class="text-surface-800-200 text-lead truncate font-medium"
 								>
 									New or import
 								</span>
@@ -1945,7 +2073,7 @@
 								onclick={() => openCharacterSessions(character)}
 							>
 								<div
-									class="bg-surface-50-950 border-surface-200-800 group-hover:border-surface-600 aspect-[3/4] overflow-hidden rounded-container border transition-colors"
+									class="bg-surface-50-950 rounded-container aspect-[3/4] overflow-hidden transition-[filter] group-hover:brightness-110"
 								>
 									{#if src}
 										<img
@@ -1986,7 +2114,7 @@
 							onclick={() => openViewToCreate("characters")}
 						>
 							<div
-								class="border-surface-300-700 text-surface-500 group-hover:border-surface-600 flex aspect-[3/4] items-center justify-center rounded-container border border-dashed transition-colors"
+								class="border-surface-300-700 text-surface-500 group-hover:border-surface-600 rounded-container flex aspect-[3/4] items-center justify-center border border-dashed transition-colors"
 							>
 								<Icons.Plus size={32} aria-hidden="true" />
 							</div>
@@ -2013,13 +2141,13 @@
 					class="flex flex-wrap items-center gap-2.5"
 					aria-label="Personas"
 				>
-					<span class="text-surface-600-400 mr-1 text-chip">
+					<span class="text-surface-600-400 text-chip mr-1">
 						Playing as
 					</span>
 					{#each personas as persona (persona.id)}
 						<button
 							type="button"
-							class="bg-surface-50-950 border-surface-200-800 hover:border-surface-300-700 flex min-h-11 items-center gap-2.5 rounded-full border py-1.5 pr-3.5 pl-1.5 transition-colors"
+							class="bg-surface-50-950 hover:bg-surface-200-800 flex min-h-11 items-center gap-2.5 rounded-full py-1.5 pr-3.5 pl-1.5 transition-colors"
 							onclick={() => {
 								// A persona is a character, so its card
 								// opens in the Characters view.
@@ -2031,7 +2159,7 @@
 							}}
 						>
 							<Avatar char={persona} size="sm" decorative />
-							<span class="truncate text-chip font-medium">
+							<span class="text-chip truncate font-medium">
 								{persona.name || "Unnamed"}
 							</span>
 							{#if persona.isDefaultPersona}
@@ -2073,7 +2201,7 @@
 	{#snippet wizardPickedFace(row: Partial<SelectCharacter>)}
 		<Avatar char={row} size="md" decorative />
 		<span class="min-w-0 flex-1">
-			<span class="block truncate text-lead font-medium">
+			<span class="text-lead block truncate font-medium">
 				{row.nickname || row.name || "Unnamed"}
 			</span>
 			{#if characterTagline(row)}
@@ -2720,7 +2848,7 @@
 									>
 										{#each serviceRoad.lines as line (line.id)}
 											<li
-												class="bg-surface-50-950 border-surface-200-800 flex flex-wrap items-center gap-3 rounded-container border p-3"
+												class="bg-surface-50-950 border-surface-200-800 rounded-container flex flex-wrap items-center gap-3 border p-3"
 											>
 												{#if line.done}
 													<Icons.CircleCheck
@@ -2872,7 +3000,7 @@
 									{/if}
 								{:else}
 									<div
-										class="bg-surface-50-950 border-surface-200-800 mx-auto flex max-w-md flex-col items-center gap-3 rounded-container border p-4 text-center"
+										class="bg-surface-50-950 border-surface-200-800 rounded-container mx-auto flex max-w-md flex-col items-center gap-3 border p-4 text-center"
 									>
 										<p class="text-sm">
 											{#if provider.error}
@@ -3033,7 +3161,9 @@
 										>
 											<Icons.Dices size={20} />
 										</span>
-										<span class="flex min-w-0 flex-col gap-1.5">
+										<span
+											class="flex min-w-0 flex-col gap-1.5"
+										>
 											<span class="font-semibold">
 												{t("Start a session")}
 											</span>
@@ -3066,6 +3196,69 @@
 									)}
 								</p>
 							</div>
+							{#if characterOffers.includes("starter")}
+								<!-- The starter character (B4): offered first,
+								     created only when pressed. -->
+								<button
+									type="button"
+									class="{CHOICE_CARD} items-center gap-3 p-3"
+									disabled={starterCharacterPending}
+									aria-busy={starterCharacterPending}
+									onclick={pickStarterCharacter}
+								>
+									<Avatar
+										char={{ name: STARTER_CHARACTER.name }}
+										size="md"
+										decorative
+									/>
+									<span
+										class="flex min-w-0 flex-1 flex-col gap-1"
+									>
+										<span class="font-semibold">
+											{STARTER_CHARACTER.name}
+										</span>
+										<span
+											class="text-surface-600-400 text-sm"
+										>
+											{STARTER_CHARACTER.summary}
+										</span>
+										<span class="flex flex-wrap gap-1.5">
+											<span
+												class="chip preset-tonal-surface rounded-full text-xs"
+											>
+												{t("Comes with Serene Pub")}
+											</span>
+										</span>
+									</span>
+									{#if starterCharacterPending}
+										<span
+											class="flex shrink-0 items-center gap-2 text-sm"
+											role="status"
+										>
+											<Icons.LoaderCircle
+												size={14}
+												class="animate-spin"
+												aria-hidden="true"
+											/>
+											{t("Adding…")}
+										</span>
+									{:else}
+										<span
+											class="preset-tonal-surface shrink-0 rounded-md px-3 py-1.5 text-sm font-medium"
+										>
+											{t("Pick")}
+										</span>
+									{/if}
+								</button>
+								{#if starterCharacterRefusal}
+									<p
+										class="text-error-600-400 text-sm"
+										role="alert"
+									>
+										{starterCharacterRefusal}
+									</p>
+								{/if}
+							{/if}
 							{#if wizardCharacters.length > 0}
 								<!-- One button, chosen or not, so the picker hands
 								     focus back to it after a pick. -->
@@ -3109,7 +3302,7 @@
 								</button>
 							{/if}
 							<div class="flex flex-col gap-2">
-								{#if wizardCharacters.length > 0}
+								{#if characterOffers.includes("starter") || characterOffers.includes("choose")}
 									<h3 class="text-surface-600-400 text-sm">
 										{t("Or add one")}
 									</h3>
@@ -3164,7 +3357,7 @@
 										</span>
 									</button>
 									<div
-										class="bg-surface-50-950 border-surface-200-800 flex flex-col gap-1.5 rounded-container border p-3"
+										class="bg-surface-50-950 border-surface-200-800 rounded-container flex flex-col gap-1.5 border p-3"
 									>
 										<span
 											class="flex items-center gap-2 font-semibold"
@@ -3341,7 +3534,7 @@
 										</span>
 									</button>
 									<div
-										class="bg-surface-50-950 border-surface-200-800 flex flex-col gap-1.5 rounded-container border p-3"
+										class="bg-surface-50-950 border-surface-200-800 rounded-container flex flex-col gap-1.5 border p-3"
 									>
 										<span
 											class="flex items-center gap-2 font-semibold"

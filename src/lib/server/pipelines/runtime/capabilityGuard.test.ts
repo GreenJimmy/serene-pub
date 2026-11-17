@@ -87,9 +87,10 @@ describe("a withdrawn capability cannot be revived by a stale cache", () => {
 				tools: 1,
 				"text->image": 1,
 				"text->embedding": 1,
-				// Undeclared for KoboldCPP: the endpoint reports the flag over
-				// /api/extra/version, but nothing implements synthesizeSpeech.
-				"text->audio": 1
+				// Undeclared for KoboldCPP: the endpoint reports the `transcribe`
+				// flag over /api/extra/version, but nothing implements
+				// transcribeAudio against it.
+				"audio->text": 1
 			})
 		)
 		expect(have).toEqual({
@@ -202,8 +203,26 @@ describe("⚠ an UNDETERMINED row is still judged by its modality", () => {
 		// break working setups on upgrade until each had been re-tested.
 		const fresh = undetermined(CONNECTION_TYPE.OPENAI)
 		expect(capabilityRefusal(fresh, "text+image->text")).toBeNull()
-		expect(capabilityRefusal(fresh, "text->audio")).toBeNull()
 		expect(capabilityRefusal(fresh, "tools")).toBeNull()
+	})
+
+	test("speech is its own section's star, and an untested text row still speaks", () => {
+		// Chat-type hosts speak too (an OpenAI-compatible endpoint, KoboldCPP),
+		// and they answered yes before Speech had a section.
+		expect(
+			capabilityRefusal(undetermined(CONNECTION_TYPE.OPENAI), "text->audio")
+		).toBeNull()
+		// A speech-only type speaks, and is not offered chat.
+		const speaker = undetermined(CONNECTION_TYPE.AUDIOCPP)
+		expect(capabilityRefusal(speaker, "text->audio")).toBeNull()
+		expect(capabilityRefusal(speaker, "text->text")).toMatch(/cannot do/)
+		// No other modality's untested row is offered speech.
+		expect(
+			capabilityRefusal(
+				undetermined(CONNECTION_TYPE.LOCAL_ONNX_EMBEDDINGS),
+				"text->audio"
+			)
+		).toMatch(/cannot do/)
 	})
 })
 

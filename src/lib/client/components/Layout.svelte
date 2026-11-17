@@ -1,6 +1,8 @@
 <script lang="ts">
+	import { lorebookIndexing } from "$lib/client/stores/lorebookIndexing.svelte"
 	import { adoptAccountTimeZone } from "$lib/client/utils/realTime.svelte"
 	import { provideCharacterImports } from "$lib/client/contexts/characterImports.svelte"
+	import { provideCharacterRows } from "$lib/client/contexts/characterRows.svelte"
 	import { provideSessionOutcomes } from "$lib/client/contexts/sessionOutcomes.svelte"
 	import { provideConnections } from "$lib/client/contexts/connections.svelte"
 	import { provideConversations } from "$lib/client/contexts/conversations.svelte"
@@ -31,6 +33,7 @@
 	import LorebooksSidebar from "./sidebars/LorebooksSidebar.svelte"
 	import CharactersSidebar from "./sidebars/CharactersSidebar.svelte"
 	import SessionsSidebar from "./sidebars/SessionsSidebar.svelte"
+	import AppsSidebar from "./sidebars/AppsSidebar.svelte"
 	import TagsSidebar from "./sidebars/TagsSidebar.svelte"
 	import UsersSidebar from "./sidebars/UsersSidebar.svelte"
 	import HelpSidebar from "./sidebars/HelpSidebar.svelte"
@@ -42,16 +45,18 @@
 		INTEREST_CONTEXT,
 		interestContextValue,
 		setInterestUser,
-		useInterest
+		useInterest,
+		declareInterest,
+		requestWithInterest
 	} from "$lib/client/sockets/interest.svelte"
 	import type { SocketEventMap } from "$lib/client/sockets/typedSocket"
 	import {
 		registerLanguageSocket,
 		setLanguage
 	} from "$lib/client/i18n/state.svelte"
-	import { toaster } from "$lib/client/utils/toaster"
 	import { notify } from "$lib/client/utils/notify"
 	import { sayUnshownSceneRunFailure } from "$lib/client/components/modals/sceneRunShown"
+	import { compileEntryStateOf } from "$lib/client/components/modals/compileEntryState"
 	import { KeyboardNavigationManager } from "$lib/client/utils/keyboardNavigation"
 	import SettingsSidebar from "$lib/client/components/sidebars/SettingsSidebar.svelte"
 	import ActivitySidebar from "$lib/client/components/sidebars/ActivitySidebar.svelte"
@@ -64,6 +69,8 @@
 	import { page } from "$app/state"
 	import { goto, pushState, replaceState } from "$app/navigation"
 	import {
+		appsAddressVerdict,
+		isAppletLauncherPath,
 		nextWidth,
 		snapWidth,
 		viewForPath,
@@ -71,14 +78,24 @@
 		registerViewAddress,
 		type ViewWidth
 	} from "$lib/client/shell/viewRoutes"
+	import {
+		appletRows,
+		type AppletGenreLike
+	} from "$lib/client/sessions/appletRows"
 	import { shellPrefs } from "$lib/client/shell/shellPrefs.svelte"
 	import { adminHealth } from "$lib/client/admin/adminHealth.svelte"
 	import { createJumpCtx, JUMP_CONTEXT } from "$lib/client/shell/jump.svelte"
 	import { createGraphBuildsCtx } from "$lib/client/stores/graphBuilds.svelte"
 	// While a session's DESKTOP layout editor is open its toolbar owns the top
 	// band, so the session header and the Jump pill step out of it.
-	import { layoutEditor } from "$lib/client/sessionLayout/layoutEditor.svelte"
+	import {
+		layoutEditor,
+		requestLayoutEditor
+	} from "$lib/client/sessionLayout/layoutEditor.svelte"
+	import { showsAdvancedControls } from "$lib/client/advancedControls"
 	import JumpPill from "$lib/client/components/shell/JumpPill.svelte"
+	import FullscreenExit from "./FullscreenExit.svelte"
+	import { useSessionFullscreen } from "$lib/client/sessions/fullscreen.svelte"
 	import JumpOverlay from "$lib/client/components/shell/JumpOverlay.svelte"
 	import ShellLoading from "$lib/client/components/shell/ShellLoading.svelte"
 	import {
@@ -114,6 +131,12 @@
 	// double-toast (or override an intentional suppression) - see the
 	// wildcard error handling note near `handleAnyEvent`.
 	const HANDLED_ERROR_EVENTS = new Set<string>([
+		// Character versions (lane cv-member2): the member page, the cast line
+		// and the Data and backups card say these refusals inline, under the
+		// button that asked.
+		"lorebooks:updateMemberToCardVersion:error",
+		"admin:castLiftNotes:error",
+		"admin:castLiftFollowGreetings:error",
 		// Messages (PLAN-private-messages-2026-10-12): the conversations
 		// context rejects the caller's promise and the Messages view says the
 		// refusal INLINE where it was asked — under the composer, in the
@@ -121,6 +144,8 @@
 		// (the switch went off; a reconnect asks again). rename, addMembers,
 		// removeMember, leave and mute are menu actions with nowhere inline to
 		// say it, so their refusals keep the catch-all toast.
+		// Voice try-out: the control says the refusal in place.
+		"voicebank:preview:error",
 		"conversations:list:error",
 		"conversations:open:error",
 		"conversations:create:error",
@@ -136,6 +161,9 @@
 		"characters:importCard:error",
 		"characters:importFromLibrary:error",
 		"characters:importResolve:error",
+		// The characters-rows context toasts a refused page itself
+		// (contexts/characterRows.svelte.ts) and stays quiet on an out-of-date cursor.
+		"characters:page:error",
 		// The folder dialog shows the server's refusal (a name this user
 		// already has) INLINE under its name field, so a toast saying the same
 		// thing would be the same correction twice, in two places.
@@ -257,9 +285,24 @@
 		"pipelines:cloneContextTemplate:error",
 		"pipelines:updateContextTemplate:error",
 		"pipelines:deleteContextTemplate:error",
-		"pipelines:cloneVariableTemplate:error",
-		"pipelines:updateVariableTemplate:error",
-		"pipelines:deleteVariableTemplate:error",
+		// The pipeline panel and the template editor say these in place
+		// (variable layouts, W4/W5).
+		"pipelines:templateVariableLayouts:error",
+		"pipelines:leftoverPicks:error",
+		"pipelines:clearLeftoverPick:error",
+		"pipelines:moveLeftoversIntoTemplate:error",
+		// The variable layouts' views each say their own refusal in place
+		// (Admin › Writing › Variable layouts, a preset's Variable layouts
+		// fieldset, the template lists and forms).
+		"pipelines:libraryVariable:error",
+		"pipelines:librarySetPubLayout:error",
+		"pipelines:presetVariableLayouts:error",
+		"pipelines:setPresetVariableLayout:error",
+		"pipelines:stampVariableTemplateReference:error",
+		"pipelines:libraryCreateTemplate:error",
+		"pipelines:libraryCloneTemplate:error",
+		"pipelines:libraryUpdateTemplate:error",
+		"pipelines:libraryDeleteTemplate:error",
 		// Both panels that ask it — an entry's Test and the composer's "What
 		// would fire now" — say its refusal in place, each only its own press
 		// (`requestId`, plan B8).
@@ -356,7 +399,10 @@
 		"state:givePiece:error": "Nothing was given",
 		// 🚧 Back · Forward (RF fix 5): the server's sentence under it.
 		"sessions:rewindTurn:error": "Could not go back",
-		"sessions:forwardTurn:error": "Could not go forward"
+		"sessions:forwardTurn:error": "Could not go forward",
+		// 🚧 audio.cpp, run by Serene Pub (lane D): the service's own spelling.
+		"audiocpp:start:error": "audio.cpp did not start",
+		"audiocpp:restart:error": "audio.cpp did not restart"
 	}
 
 	// Turns "characters:update:error" into "Characters update failed", etc.
@@ -373,6 +419,8 @@
 			)
 			.filter(Boolean)
 			.map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+			// A service spelled its own way, never "Audiocpp".
+			.map((word) => (word === "Audiocpp" ? "audio.cpp" : word))
 		return `${words.join(" ")} failed`
 	}
 
@@ -448,10 +496,6 @@
 	let openViews = $state<string[]>([])
 	let activeView = $state<string | null>(null)
 	let fullPageView = $state<string | null>(null)
-	/** Stage only (Ctrl+.): the rail and the sidebar step aside. See PanelsCtx. */
-	let stageOnly = $state(false)
-	/** Stage only's rail, shown over the stage while the pointer is at the left edge. */
-	let railPeek = $state(false)
 	/** The dock's width while its edge is being dragged; null otherwise. */
 	let dragWidth = $state<number | null>(null)
 	/** Half is a remembered dock width, not a mode of its own. */
@@ -579,11 +623,8 @@
 			return currentWidth()
 		},
 		setViewWidth: (width) => setViewWidth(width),
-		get stageOnly() {
-			return stageOnly
-		},
-		set stageOnly(next: boolean) {
-			setStageOnly(next)
+		get fullscreen() {
+			return fullscreenOn
 		},
 		openView: (key, opts) => void openView(key, opts),
 		closeView: (key) => closeView(key),
@@ -682,15 +723,16 @@
 		// through getOrderedEntries) lists things in the same sequence the rail
 		// does rather than in its own.
 		leftNavOrder: [
-			"models",
-			"loadouts",
 			"connections",
+			"models",
 			"sampling",
+			"loadouts",
 			"settings",
 			"users"
 		],
 		rightNavOrder: [
 			"sessions",
+			"apps",
 			"characters",
 			"lorebooks",
 			"conversations",
@@ -731,6 +773,9 @@
 	let koboldCppSettingsCtx: KoboldCppSettingsCtx = $state({
 		settings: undefined
 	})
+	let audioCppSettingsCtx: AudioCppSettingsCtx = $state({
+		settings: undefined
+	})
 	let userSettingsCtx: UserSettingsCtx = $state({ settings: undefined })
 	let customThemeCssKeys = $state<Record<string, string>>({})
 	let vectorizationCtx: VectorizationCtx = $state({
@@ -745,6 +790,28 @@
 	const openSessionCtx: OpenSessionCtx = createOpenSessionView({
 		store: sessionStore,
 		userId: () => userCtx.user?.id ?? null
+	})
+	// Full screen (SHAPES L1): a per-viewer, per-session control. Only a
+	// session route with a session id has one.
+	const fullscreen = $derived(
+		page.url.pathname.startsWith("/sessions/") &&
+			openSessionCtx.sessionId != null
+			? useSessionFullscreen(openSessionCtx.sessionId)
+			: null
+	)
+	// 🚧 M2c: an applet's launcher (`/apps/<pluginId>`) fills the window like a session's full screen:
+	// no rail, no header. It owns its own Leave control and Esc, and leaving navigates away.
+	const appletOn = $derived(isAppletLauncherPath(page.url.pathname))
+	const fullscreenOn = $derived(!!fullscreen?.on || appletOn)
+	$effect(() => {
+		if (!fullscreenOn) return
+		untrack(() => {
+			// A view in Focus steps down to its dock width first; the Views
+			// sheet closes; the layout editor and full screen never overlap.
+			if (fullPageView !== null) setViewWidth(shellPrefs.dockWidth)
+			panelsCtx.isMobileMenuOpen = false
+			if (layoutEditor.open) fullscreen?.exit()
+		})
 	})
 	// Every graph build, one per book — never a single slot (plan B8): see
 	// `stores/graphBuilds.svelte.ts`.
@@ -802,6 +869,25 @@
 	)
 	let hasUser = $derived(!!userCtx.user)
 	let shouldShowApp = $derived(isSettingsLoaded && hasUser)
+
+	// 🚧 M2d: the applets the Apps view lists. No shell store holds
+	// `sessions:genres`, so the shell asks once (the Sessions view and Home ask
+	// for themselves); the view takes `appletCards` as a prop and calls no
+	// socket of its own.
+	let appletGenres: AppletGenreLike[] = $state([])
+	let genresArrived = $state(false)
+	const appletCards = $derived(appletRows(appletGenres))
+	$effect(() => {
+		if (!shouldShowApp) return
+		return requestWithInterest(
+			"sessions:genres",
+			{},
+			(msg: Sockets.Sessions.Genres.Response) => {
+				appletGenres = (msg.genres || []) as AppletGenreLike[]
+				genresArrived = true
+			}
+		)
+	})
 	let isAdmin = $derived(!!userCtx.user?.isAdmin)
 
 	// The one subscriber to the `conversations:` family: the Messages list,
@@ -893,6 +979,14 @@
 			}
 		} else {
 			delete panelsCtx.rightNav.conversations
+		}
+
+		// 🚧 M2d ★N1 — Apps is registered only while an applet is listed, so a
+		// fresh install draws no empty rail item.
+		if (appletCards.length > 0) {
+			panelsCtx.rightNav.apps = { icon: Icons.LayoutGrid, title: "Apps" }
+		} else {
+			delete panelsCtx.rightNav.apps
 		}
 
 		// Administration is a view like any other (S3) — a registry entry, so
@@ -1009,9 +1103,9 @@
 		untrack(() => {
 			if (open) {
 				// The editor takes the header band and lays out every zone;
-				// Stage only would hide what it edits and put its pill over
-				// Cancel and Done.
-				if (stageOnly) setStageOnly(false)
+				// Full screen would hide what it edits and put its corner
+				// control over Cancel and Done.
+				if (fullscreen?.on) fullscreen.exit()
 				if (stowedForEditor) return
 				stowedForEditor = { view: activeView, fullPage: fullPageView }
 				if (activeView !== null) collapseSidebar()
@@ -1041,6 +1135,7 @@
 		opts: { toggle?: boolean; fullPage?: boolean } = {}
 	): Promise<void> {
 		if (!isSettingsLoaded || !isKnownView(key)) return
+		if (fullscreen?.on) fullscreen.exit()
 
 		if (activeView === key) {
 			if (opts.fullPage) fullPageView = key
@@ -1249,6 +1344,18 @@
 		// before its address can open it, or the one edge is spent on
 		// nothing.
 		const addressed = viewForPath(path)
+		// 🚧 M2d: Apps registers only while an applet is listed, so a cold
+		// /apps with none goes Home instead of waiting for a view that never
+		// comes (and leaving a blank page).
+		if (
+			addressed === "apps" &&
+			shouldShowApp &&
+			appsAddressVerdict(genresArrived ? appletCards.length : null) ===
+				"home"
+		) {
+			untrack(() => void goto("/", { replaceState: true }))
+			return
+		}
 		const ready =
 			shouldShowApp &&
 			isSettingsLoaded &&
@@ -1416,25 +1523,6 @@
 		}
 	}
 
-	/**
-	 * Stage only hides the sidebar, so it cannot be entered from Focus: the
-	 * focused view is the only thing on screen while `<main>` is hidden, and
-	 * hiding it too left a blank window. Focus steps down to its dock width
-	 * first (popping its address), then the stage takes the window. Never
-	 * while the layout editor is open, which owns the header band the "Leave
-	 * stage only" pill would sit on.
-	 */
-	function setStageOnly(next: boolean) {
-		railPeek = false
-		if (!next) {
-			stageOnly = false
-			return
-		}
-		if (layoutEditor.open) return
-		if (fullPageView !== null) setViewWidth(shellPrefs.dockWidth)
-		stageOnly = true
-	}
-
 	/* ── shell keys ─────────────────────────────────────────────────────── */
 
 	function isEditableTarget(target: EventTarget | null): boolean {
@@ -1468,11 +1556,12 @@
 	}
 
 	/**
-	 * Ctrl+\ cycles the active view's width, Ctrl+Shift+\ closes it, Ctrl+.
-	 * toggles Stage only, and Escape steps down ONE layer: Stage only, then
-	 * Focus to the width it came from, then the dock collapses. Escape never
-	 * leaves a page, never cancels a generation, and stays out of the way
-	 * while a field, a dialog or a popover has it.
+	 * Ctrl+\ cycles the active view's width, Ctrl+Shift+\ closes it,
+	 * Ctrl/⌘+Shift+F toggles full screen, and Escape steps down ONE layer:
+	 * full screen first (from anywhere, text fields included), then Focus to
+	 * the width it came from, then the dock collapses (those two on desktop,
+	 * outside a text field). Escape never leaves a page, never cancels a
+	 * generation, and stays out of the way while a dialog or a popover has it.
 	 */
 	function handleShellKeys(event: KeyboardEvent) {
 		if (!shouldShowApp || event.defaultPrevented) return
@@ -1484,20 +1573,30 @@
 			else setViewWidth(nextWidth(currentWidth()))
 			return
 		}
-		if (mod && !event.shiftKey && event.key === ".") {
-			if (!desktop.matches) return
+		if (mod && event.shiftKey && event.code === "KeyF") {
+			if (!fullscreen) return
 			event.preventDefault()
-			setStageOnly(!stageOnly)
+			fullscreen.toggle()
+			return
+		}
+		if (event.key === "Escape" && fullscreen?.on) {
+			if (
+				event.isComposing ||
+				jumpCtx.isOpen ||
+				layoutEditor.open ||
+				somethingOnTop()
+			)
+				return
+			event.preventDefault()
+			fullscreen.exit()
 			return
 		}
 		if (event.key !== "Escape" || !desktop.matches) return
+		// 🚧 M2c: an applet's launcher owns Escape (it leaves to Sessions); the views it covers do not step down.
+		if (appletOn) return
 		if (jumpCtx.isOpen || layoutEditor.open) return
 		if (isEditableTarget(event.target) || somethingOnTop()) return
-		if (stageOnly) {
-			event.preventDefault()
-			stageOnly = false
-			railPeek = false
-		} else if (fullPageView !== null) {
+		if (fullPageView !== null) {
 			event.preventDefault()
 			void escapeStep(() => setViewWidth(shellPrefs.dockWidth))
 		} else if (activeView !== null) {
@@ -1574,6 +1673,7 @@
 	/** Activity lives at the foot of the rail, not among the content views. */
 	const CONTENT_ORDER = [
 		"sessions",
+		"apps",
 		"characters",
 		"lorebooks",
 		"conversations",
@@ -1582,8 +1682,8 @@
 	const SYSTEM_ORDER = [
 		"connections",
 		"models",
-		"loadouts",
 		"sampling",
+		"loadouts",
 		"settings"
 	]
 	/** The four the mobile bottom bar shows by name; the rest live under More. */
@@ -1675,23 +1775,23 @@
 		])) {
 			entries.push({ ...item, kind: "view", group: "system" })
 		}
-		// Help is the foot of Tune — so it is excluded from the loop above and
-		// pushed here rather than left to that loop's "anything registered
-		// later appends" tail, which would land it above Legacy.
-		const help = panelsCtx.leftNav.help
-		if (help) {
-			entries.push({
-				...help,
-				key: "help",
-				kind: "view",
-				group: "system"
-			})
-		}
 		const activity = panelsCtx.rightNav.activity
 		if (activity) {
 			entries.push({
 				...activity,
 				key: "activity",
+				kind: "view",
+				group: "foot"
+			})
+		}
+		// Help sits at the foot, under Activity (owner 2026-11-12; the last
+		// item of Tune before). It is excluded from the Tune loop above and
+		// pushed here, so it never lands among the managers.
+		const help = panelsCtx.leftNav.help
+		if (help) {
+			entries.push({
+				...help,
+				key: "help",
 				kind: "view",
 				group: "foot"
 			})
@@ -2188,6 +2288,7 @@
 	// The one subscriber to the card-import events; views take the outcome
 	// from this context (contexts/characterImports.svelte.ts).
 	provideCharacterImports()
+	provideCharacterRows()
 	// Share to ‹book› with nothing waiting, and Close out started: said once, here (contexts/sessionOutcomes.svelte.ts).
 	provideSessionOutcomes()
 	// The connections list, model sync and the one way to choose a model, for
@@ -2245,6 +2346,7 @@
 		setContext("systemSettingsCtx", systemSettingsCtx)
 		setContext("ollamaSettingsCtx", ollamaSettingsCtx)
 		setContext("koboldCppSettingsCtx", koboldCppSettingsCtx)
+		setContext("audioCppSettingsCtx", audioCppSettingsCtx)
 		setContext("userSettingsCtx", userSettingsCtx)
 		setContext("vectorizationCtx", vectorizationCtx)
 		setContext("taskQueueCtx", taskQueueCtx)
@@ -2268,7 +2370,7 @@
 				const isAuthenticated = await checkAuthentication()
 				if (!isAuthenticated) {
 					// User is not authenticated, redirect to login
-					toaster.error({
+					notify.error({
 						title: "Authentication Required",
 						description:
 							"Please login to continue using the application."
@@ -2282,7 +2384,7 @@
 			initializeSocketConnection()
 		} catch (error) {
 			console.error("Failed to check authentication flow:", error)
-			toaster.error({
+			notify.error({
 				title: "Connection Error",
 				description:
 					"Failed to verify authentication. Please refresh the page."
@@ -2348,14 +2450,14 @@
 	}
 
 	function handleError(message: SocketEventMap["error"]["response"]) {
-		toaster.error({
+		notify.error({
 			title: message.error,
 			description: message.description
 		})
 	}
 
 	function handleSuccess(message: SocketEventMap["success"]["response"]) {
-		toaster.success({
+		notify.success({
 			title: message.title,
 			description: message.description
 		})
@@ -2388,6 +2490,7 @@
 
 		// Graph builds: every one, one per book (plan B8).
 		graphBuildsCtx.receive(activities)
+		lorebookIndexing.receive(activities)
 
 		// Scene summarizations: keep all
 		sceneSummarizesCtx.activities = sceneActivities.map((a: any) => ({
@@ -2434,23 +2537,8 @@
 		const compileActivities = activities.filter(
 			(a: any) => a.kind === "compile_history_entry"
 		)
-		compileEntriesCtx.activities = compileActivities.map((a: any) => ({
-			activityId: a.id,
-			userId: a.userId,
-			historyEntryId: a.historyEntryId,
-			historyEntryDate: a.historyEntryDate,
-			lorebookId: a.lorebookId,
-			lorebookLabel: a.lorebookLabel,
-			branchId: a.branchId ?? null,
-			moment: a.moment ?? null,
-			status: a.status,
-			phase: a.phase,
-			batch: a.batch,
-			totalBatches: a.totalBatches,
-			errorMessage: a.errorMessage,
-			pendingResult: a.pendingResult,
-			startedAt: a.startedAt
-		}))
+		compileEntriesCtx.activities =
+			compileActivities.map(compileEntryStateOf)
 	}
 
 	function handleNarrativeGraphBuildLog(
@@ -2478,6 +2566,30 @@
 		handleSystemSettingsGet
 	)
 	useInterest<"users:current">("users:current", handleUsersCurrent)
+	// audio.cpp, run by Serene Pub: the `audiocpp:` prefix is admin-only, so a
+	// member never declares it (the registry would refuse). A reply to either
+	// event carries the settings after the call; the one ask fills the context.
+	function handleAudioCppSettings(
+		message: SocketEventMap["audiocpp:getSettings"]["response"]
+	) {
+		audioCppSettingsCtx.settings = message.settings
+	}
+	$effect(() => {
+		if (!isAdmin) return
+		const releaseGet = declareInterest<"audiocpp:getSettings">(
+			"audiocpp:getSettings",
+			handleAudioCppSettings
+		)
+		const releaseUpdate = declareInterest<"audiocpp:updateSettings">(
+			"audiocpp:updateSettings",
+			handleAudioCppSettings
+		)
+		socket.emit("audiocpp:getSettings", {})
+		return () => {
+			releaseGet()
+			releaseUpdate()
+		}
+	})
 	useInterest<"userSettings:get">("userSettings:get", handleUserSettingsGet)
 	useInterest<"vectorization:progress">(
 		"vectorization:progress",
@@ -2611,7 +2723,7 @@
 	<!-- Show normal app when accounts are disabled OR when accounts are enabled and user is authenticated -->
 	<div
 		class="bg-surface-100-900 relative h-full max-h-[100dvh] w-full"
-		data-stage-only={stageOnly && desktop.matches ? "" : undefined}
+		data-fullscreen={fullscreenOn ? "" : undefined}
 		data-animate-views={shellPrefs.animateViews ? "" : undefined}
 		role="application"
 		aria-label="Serene Pub Session Application"
@@ -2661,16 +2773,13 @@
 			     you get instead. -->
 			<nav
 				bind:this={railRef}
-				class="panel-edge hidden shrink-0 flex-col overflow-y-auto border-r py-3 transition-[width] duration-base {!stageOnly
-					? 'lg:flex'
-					: railPeek
-						? 'lg:fixed lg:inset-y-0 lg:left-0 lg:z-30 lg:flex lg:shadow-2xl'
-						: ''} {railWide
+				class="panel-edge hidden shrink-0 flex-col overflow-y-auto border-r py-3 transition-[width] duration-base {fullscreenOn
+					? ''
+					: 'lg:flex'} {railWide
 					? 'w-52 items-stretch gap-0.5 px-2.5'
 					: 'w-16 items-center gap-1'}"
 				style="background: {RAIL_BG};"
 				aria-label="Primary navigation"
-				onpointerleave={() => (railPeek = false)}
 			>
 				<!-- Not a link: Home is a rail item of its own two rows down,
 				     and a second route to the same place inside a roving-
@@ -2974,7 +3083,7 @@
 				style={dragWidth !== null && desktop.matches
 					? `width: ${dragWidth}px;`
 					: undefined}
-				hidden={activeView === null || (stageOnly && desktop.matches)}
+				hidden={activeView === null || fullscreenOn}
 				role={desktop.matches ? "region" : "dialog"}
 				aria-modal={desktop.matches ? undefined : "true"}
 				aria-label={activeView
@@ -3152,7 +3261,7 @@
 			     Dock, Half or Focus on release), arrow keys step through the
 			     same three, double click returns to the 400px dock. Zero-width
 			     so it takes nothing from either side. -->
-			{#if activeView !== null && fullPageView === null && desktop.matches && !stageOnly && !layoutEditor.open}
+			{#if activeView !== null && fullPageView === null && desktop.matches && !fullscreenOn && !layoutEditor.open}
 				<div class="relative z-20 hidden w-0 shrink-0 lg:block">
 					<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 					<div
@@ -3201,7 +3310,7 @@
 			     is in it, whether a reply is being written, and one click
 			     back. Only over a page that is still there to return to — a
 			     view focused from its own address has nothing underneath. -->
-			{#if fullPageView !== null && desktop.matches && !stageOnly && (page.state as App.PageState).focus !== undefined && openSessionCtx.sessionId !== null}
+			{#if fullPageView !== null && desktop.matches && !fullscreenOn && (page.state as App.PageState).focus !== undefined && openSessionCtx.sessionId !== null}
 				<aside
 					class="bg-surface-100-900 panel-edge order-last hidden w-14 shrink-0 flex-col items-center gap-3 border-l py-3 lg:flex"
 					aria-label="Underneath: {openSessionCtx.sessionName ??
@@ -3283,7 +3392,7 @@
 				     And not even those while the desktop layout editor is
 				     open: the editor's toolbar takes this band, so the header
 				     steps out rather than being covered by it. -->
-				{#if page.url.pathname.startsWith("/sessions/") && !layoutEditor.open}
+				{#if page.url.pathname.startsWith("/sessions/") && !layoutEditor.open && !fullscreenOn}
 					<Header />
 				{/if}
 				<!-- 🚧 Interim reading width. Before the single-sidebar shell
@@ -3317,6 +3426,7 @@
 			<!-- ══ the mobile bottom bar ═════════════════════════════════
 			     Four destinations and Views (the open views, then everything
 			     else), replacing the hamburger. -->
+			{#if !fullscreenOn}
 			<nav
 				class="bg-surface-50-950 panel-edge flex shrink-0 items-center justify-around border-t px-1 pt-2 pb-3 lg:hidden"
 				aria-label="Primary navigation"
@@ -3373,6 +3483,7 @@
 					</button>
 				{/each}
 			</nav>
+			{/if}
 		</div>
 
 		<!-- ══ Jump ══════════════════════════════════════════════════════
@@ -3386,6 +3497,7 @@
 		     so there is nothing for Jump to do before a user is known, and
 		     Document View has its own shell and never renders this file.
 
+		     In full screen the corner control takes the pill's place (never both).
 		     The pill leaves while the session layout editor's toolbar owns the
 		     top band, and while a sidebar view is full page: the pill sits
 		     UNDER sidebars (ruled 2026-09-17), and a full-page view is a
@@ -3395,30 +3507,21 @@
 		     unrendered there too, exactly as for full page, rather than
 		     merely stacked under. Ctrl-K opens the overlay in every one of
 		     those states. -->
-		{#if stageOnly && desktop.matches && !layoutEditor.open}
-			<!-- The way out of Stage only, where the Jump pill would be. The
-			     8px strip on the left edge brings the rail back over the stage. -->
-			<button
-				type="button"
-				class="bg-surface-50-950/90 border-surface-200-800 text-surface-700-300 hover:text-surface-950-50 focus-visible:outline-primary-500 fixed top-2 right-4 z-[44] flex h-[34px] items-center gap-2 rounded-full border px-3 text-chip backdrop-blur focus-visible:outline-2"
-				onclick={() => {
-					stageOnly = false
-					railPeek = false
-				}}
-			>
-				Leave stage only
-				<kbd
-					class="bg-surface-200-800 text-surface-800-200 rounded-md px-1.5 py-0.5 font-mono text-meta"
-				>
-					Esc
-				</kbd>
-			</button>
-			<div
-				class="fixed inset-y-0 left-0 z-[29] w-2"
-				role="presentation"
-				onpointerenter={() => (railPeek = true)}
-			></div>
-		{:else if !layoutEditor.open && fullPageView === null && !panelsCtx.isMobileMenuOpen && (desktop.matches || activeView === null) && !sessionHeaderFurled}
+		{#if fullscreenOn && fullscreen && !layoutEditor.open}
+			<!-- The way out of full screen, where the Jump pill would be. -->
+			<FullscreenExit
+				rewind={openSessionCtx.rewind ?? null}
+				sessionName={openSessionCtx.sessionName}
+				notice={fullscreen.notice}
+				onExit={() => fullscreen.exit()}
+				onLayout={showsAdvancedControls(userSettingsCtx.settings)
+					? () => requestLayoutEditor()
+					: undefined}
+				onDisplay={() => fullscreen.enter({ display: true })}
+				onNoticeShown={() => fullscreen.clearNotice()}
+			/>
+		{:else if !appletOn && !layoutEditor.open && fullPageView === null && !panelsCtx.isMobileMenuOpen && (desktop.matches || activeView === null) && !sessionHeaderFurled}
+			<!-- 🚧 M2c: an applet's launcher is full screen too — no Jump pill over it (STYLE-GUIDE §5.1). -->
 			<JumpPill {jumpCtx} />
 		{/if}
 		{#if jumpCtx.isOpen}
@@ -3573,6 +3676,9 @@
 				bind:onclose={viewCloseGates[key]}
 				sessionId={sessionIdInView}
 			/>
+		{:else if key === "apps"}
+			<!-- 🚧 M2d: no `bind:onclose`: the list holds no unsaved work. -->
+			<AppsSidebar cards={appletCards} />
 		{:else if key === "lorebooks"}
 			<LorebooksSidebar bind:onclose={viewCloseGates[key]} />
 		{:else if key === "tags"}

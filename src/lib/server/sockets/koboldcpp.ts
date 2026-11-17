@@ -5,10 +5,11 @@ import {
 } from "$lib/server/connections/recommendedGguf"
 import { db } from "$lib/server/db"
 import * as schema from "$lib/server/db/schema"
-import { eq, and, inArray } from "drizzle-orm"
+import { eq, and, inArray, sql } from "drizzle-orm"
 import type { Handler } from "$lib/shared/events"
 import { buildConnectionsList, connectionsSetDefault } from "./connections"
 import { buildSystemSettingsGet } from "./systemSettings"
+import { fillReplyIfEmpty } from "$lib/server/koboldcpp/fillReplyOnArrival"
 import { getAppDataDir } from "$lib/server/db/drizzle.config"
 import { CONNECTION_TYPE } from "$lib/shared/constants/ConnectionTypes"
 import { flagsFrom, NO_FLAGS } from "$lib/server/koboldcpp/probeCapabilities"
@@ -22,22 +23,14 @@ import * as subprocessManager from "$lib/server/koboldcpp/subprocessManager"
 import * as binaryManager from "$lib/server/koboldcpp/binaryManager"
 import { loginRateLimit } from "$lib/server/services/loginRateLimit"
 
-// Every legitimate model downloadUrl this app ever constructs points at
-// huggingface.co (search/recommended-models flows below). Hugging Face's
-// large-file storage (Xet) commonly redirects a real `.../resolve/main/...`
-// download to a host under hf.co — eg. cas-bridge.xethub.hf.co — which is
-// NOT a subdomain of huggingface.co, so both roots need covering. Suffix
-// checks, not exact-subdomain matches — deeper subdomains under xethub.hf.co
-// exist and a single-label wildcard would miss them.
-export function isAllowedHuggingFaceHost(hostname: string): boolean {
-	const h = hostname.toLowerCase()
-	return (
-		h === "huggingface.co" ||
-		h.endsWith(".huggingface.co") ||
-		h === "hf.co" ||
-		h.endsWith(".hf.co")
-	)
-}
+import {
+	isAllowedHuggingFaceHost,
+	downloadFileInParallelChunks,
+	resolveHuggingFaceDownload,
+	type ResolvedDownload
+} from "$lib/server/net/hfDownload"
+// Re-exported: the helpers were lifted to net/hfDownload.ts; importers of this module keep working.
+export { isAllowedHuggingFaceHost }
 import {
 	unloadModel,
 	getLoadedSignature
@@ -53,11 +46,18 @@ import {
 	modelsDirsToScan,
 	resolveModelPath
 } from "$lib/server/koboldcpp/modelsDir"
+import { speechRefusal } from "$lib/server/koboldcpp/speechRefusal"
+import { getAudioLists } from "$lib/server/audio/audioList"
 import { rereadDetectedTextModels } from "$lib/server/koboldcpp/rereadDetectedKinds"
 import {
 	formatForFilename,
 	modalityForKind
 } from "$lib/server/localModels/registry"
+import {
+	fetchHfRepoSiblings,
+	ggufQuantOptions,
+	withSiblingSizes
+} from "$lib/server/connections/hfGgufQuants"
 import { setCapabilityDefault } from "$lib/server/connections/capabilityDefaults"
 import {
 	ensureConnectionModel,
@@ -67,6 +67,7 @@ import { withStarConsequences } from "$lib/server/connections/starConsequences"
 import { syncManyConnectionModels } from "$lib/server/connections/modelSync"
 import {
 	ensureManagedKoboldCppEndpoint,
+	managedBaseUrl,
 	managedKoboldCppEndpoint
 } from "$lib/server/koboldcpp/managedEndpoint"
 import {
@@ -74,6 +75,10 @@ import {
 	notifyDownloadSettled
 } from "$lib/server/notifications/downloads"
 import { isAndroidWrapper } from "$lib/server/utils"
+import {
+	createProgressThrottle,
+	createUserEmitters
+} from "$lib/server/managed/emitters"
 
 // --- KOBOLDCPP MANAGER HANDLERS ---
 
@@ -103,6 +108,15 @@ export const koboldCppSetBaseUrl: Handler<
 				error: "Invalid URL protocol"
 			})
 			throw new Error("Invalid URL protocol")
+		}
+		// In Managed mode the address is made from the port (`managedBaseUrl`);
+		// an edit here would make the two disagree.
+		const stored = await db.query.koboldCppSettings.findFirst()
+		if (stored?.koboldCppManagedMode === "managed") {
+			const error =
+				"In Managed mode the address follows the port. Change the port instead."
+			emitToUser("koboldcpp:setBaseUrl:error", { error })
+			throw new Error(error)
 		}
 
 		await db
@@ -330,8 +344,9 @@ export async function buildKoboldCppListModels(): Promise<Sockets.KoboldCPP.List
 		for (const name of entries) {
 			if (!isModelFilename(name)) continue
 			if (incompleteFilenames.has(name)) continue
-			// `filename` is UNIQUE, so the same basename in both directories
-			// is ONE row, described by whichever directory the scan saw
+			// A GGUF's `filename` is UNIQUE (an ONNX row keys per modality),
+			// so the same basename in both directories is ONE row, described
+			// by whichever directory the scan saw
 			// last. Bounded to metadata: each connection still loads the
 			// copy in its own kind's directory, because resolveModelPath
 			// tries that one first.
@@ -410,6 +425,7 @@ export async function buildKoboldCppListModels(): Promise<Sockets.KoboldCPP.List
 						})
 						.onConflictDoUpdate({
 							target: schema.localModels.filename,
+							targetWhere: sql`"format" <> 'onnx'`,
 							set: { filename: name }
 						})
 						.returning()
@@ -948,7 +964,6 @@ const recommendedCache = new Map<
 	}
 >()
 
-const GGUF_QUANT_RE = /^(Q|IQ|BF|F)\d/i
 
 /**
  * The maintainer's own curated image models. There is no image equivalent of
@@ -997,27 +1012,8 @@ async function resolveHfModel(
 
 		for (const m of data) {
 			if (m.private || m.gated === true || m.gated === "auto") continue
-			const pullOptions: Sockets.KoboldCPP.SearchModels.PullOption[] = (
-				m.siblings as any[]
-			)
-				.filter((s: any) => s.rfilename.endsWith(".gguf"))
-				.filter((s: any) =>
-					GGUF_QUANT_RE.test(
-						s.rfilename
-							.replace(".gguf", "")
-							.split("-")
-							.pop()
-							?.toUpperCase() ?? ""
-					)
-				)
-				.map((s: any) => ({
-					label:
-						s.rfilename.replace(".gguf", "").split("-").pop() ??
-						s.rfilename,
-					filename: s.rfilename,
-					downloadUrl: `https://huggingface.co/${m.id}/resolve/main/${s.rfilename}`,
-					sizeBytes: typeof s.size === "number" ? s.size : undefined
-				}))
+			const pullOptions: Sockets.KoboldCPP.SearchModels.PullOption[] =
+				ggufQuantOptions(m.id, m.siblings)
 			if (pullOptions.length > 0) {
 				return {
 					name: m.id,
@@ -1096,21 +1092,62 @@ async function fetchRecommendedImageModels(): Promise<
 	})
 	if (!resp.ok) throw new Error(`Hugging Face API error: ${resp.status}`)
 	const data = await resp.json()
+	// What our own list says about each file (owner ruling 2026-11-08): the
+	// family, one sentence, and the sampling preset it pairs with. Joined by
+	// file name; an unlisted file keeps the repo caveat alone.
+	const { recommendedImageEntries, imageFamilyLabel } = await import(
+		"$lib/server/connections/recommendedImageGguf"
+	)
+	const known = await recommendedImageEntries()
 
-	return imagePullOptions(IMGMODEL_REPO_ID, data?.siblings ?? []).map(
-		(option) => ({
-			name: option.filename.replace(MODEL_EXTENSION_RE, ""),
+	return imagePullOptions(IMGMODEL_REPO_ID, data?.siblings ?? []).map((option) => {
+		const entry = known.get(option.filename)
+		const bare = option.filename.replace(MODEL_EXTENSION_RE, "")
+		const description = entry
+			? [
+					`${entry.display_name} — ${imageFamilyLabel(entry.family)}. ${entry.description}`,
+					entry.single_file
+						? "One file is all it needs."
+						: "Needs Clip and T5-XXL files beside it, which this list does not cover.",
+					`Pairs with the ${presetName(entry.sampling)} sampling preset.`
+				].join(" ")
+			: IMGMODEL_CAVEAT
+		return {
+			// The file name stays the card's name: the finder's "On disk" match
+			// and the download row read it; the list's display name opens the
+			// description instead.
+			name: bare,
 			// `ollamaName` is required by RecommendedModel and means "the
 			// catalog's own name for this entry" — for a repo of loose files
 			// that is the filename, there being no ollama-style name to give.
-			ollamaName: option.filename.replace(MODEL_EXTENSION_RE, ""),
-			description: IMGMODEL_CAVEAT,
+			ollamaName: bare,
+			description,
 			url: `https://huggingface.co/${IMGMODEL_REPO_ID}`,
 			pullOptions: [option],
-			sdcpp: true
-		})
-	)
+			sdcpp: true,
+			...(entry ? { tags: [imageFamilyLabel(entry.family)] } : {}),
+			// The list's drawing figure, which the finder orders and marks the
+			// cards by. Withheld from a bundle the one file cannot run: with
+			// no tier to match it sorts after every complete model, so the
+			// gold Get never lands on a model that loads and then fails.
+			...(entry?.single_file && entry.recommended_vram
+				? { recommendedVram: entry.recommended_vram }
+				: {})
+		}
+	})
 }
+
+/** The core image preset's name for a seed key, as the presets are named in `db/defaults.ts`. */
+const presetName = (seedKey: string): string =>
+	(
+		({
+			"sampling-image-default": "SD 1.5",
+			"sampling-image-sdxl": "SDXL",
+			"sampling-image-sd3": "SD 3.x",
+			"sampling-image-flux": "Flux",
+			"sampling-image-turbo": "Turbo / Distilled"
+		}) as Record<string, string>
+	)[seedKey] ?? seedKey
 
 export const koboldCppRecommendedModelsHandler: Handler<
 	Sockets.KoboldCPP.RecommendedModels.Params,
@@ -1173,6 +1210,10 @@ export const koboldCppRecommendedModelsHandler: Handler<
 					if (!hf) return null
 					return {
 						...hf,
+						pullOptions: withSiblingSizes(
+							hf.pullOptions,
+							await fetchHfRepoSiblings(hf.name)
+						),
 						ollamaName: ym.name,
 						// The Hub's sibling list carries no byte counts, so the
 						// list's own GB figure is the only size a row can quote.
@@ -1187,7 +1228,17 @@ export const koboldCppRecommendedModelsHandler: Handler<
 							undefined,
 						// The list's curated vocabulary. Both old parsers dropped
 						// it, so it was written and fetched and never shown.
-						tags: ym.tags
+						tags: ym.tags,
+						// The projector the list pairs with a vision model: Get
+						// fetches both, so a vision model never arrives blind.
+						...(ym.mmproj && !/[\\/]/.test(ym.mmproj)
+							? {
+									visionProjector: {
+										filename: ym.mmproj,
+										downloadUrl: `https://huggingface.co/${hf.name}/resolve/main/${ym.mmproj}`
+									}
+								}
+							: {})
 					}
 				}
 			)
@@ -1225,80 +1276,28 @@ let activeDownloads: Record<string, DownloadEntry> = {}
 // *within* a single file's download.
 const MAX_CONCURRENT_MODEL_DOWNLOADS = 3
 
-// A single sequential HTTP connection to Hugging Face's CDN is
-// throughput-capped well below what the link can sustain in aggregate —
-// the same reason HF's own hf_transfer tool and third-party aria2c-based
-// downloaders exist. Splitting the file into byte-range chunks and pulling
-// them concurrently (bounded worker pool below) gets meaningfully closer to
-// real link speed. Chunk *size*, not chunk *count*, is fixed so a 70GB
-// model doesn't degrade into a handful of multi-GB chunks that leave the
-// pool under-saturated for most of the download.
-const PARALLEL_CHUNK_SIZE_BYTES = 64 * 1024 * 1024 // 64MB
-// Within the 4-16 range aria2c -x/hf_transfer commonly use — enough to beat
-// a single connection, conservative enough not to look abusive to HF's CDN.
-const MAX_PARALLEL_CHUNKS_PER_DOWNLOAD = 6
-// Map<userId, {emit, connections}>, not a single nullable slot or a
-// Set<EmitFn> — the old single-slot design meant whichever admin most
-// recently called koboldCppDownloadModelHandler/
-// koboldCppGetDownloadProgressHandler became the sole recipient of model
-// download progress, silently cutting off any other connected admin. A
-// Set<EmitFn> fixes that but overcorrects: registerKoboldCppHandlers runs
-// once per *connection*, and emitToUser already reaches every open
-// tab/connection for a user — a room emit, or one emit per interested
-// socket in that room once the event is gated — so N tabs for the same
-// admin would mean N entries in the Set, each independently re-broadcasting
-// to all N sockets (N² transmissions per tick instead of N). Keying by
-// userId with a connection refcount collapses that back to one broadcast
-// per user regardless of how many tabs they have open, and only unregisters
-// once every one of their connections has disconnected.
-//
-// The slot keeps the FIRST socket's emitToUser for the whole life of that
-// refcount, and that is safe for one reason: the closure resolves its
-// recipients at emit time from `io` and the user id, never from the socket
-// that made it. The interest gate walks `user_<id>` for the sockets whose
-// interest set holds the key and emits to each by id, so a second tab that
-// declared koboldcpp:downloadProgress is served by the first tab's closure
-// — and goes on being served after that first tab disconnects, because the
-// closure never reads it. The one thing the originating socket still lends
-// is the redaction subject on the UNGATED path, and every socket in a user
-// room carries the same one. The same holds for binaryManager's and
-// subprocessManager's registries, which are this map's shape exactly.
-const downloadProgressEmitters = new Map<
-	number,
-	{
-		emit: (data: Sockets.KoboldCPP.DownloadProgress.Response) => void
-		connections: number
-	}
->()
+// Per-user refcounted emitters and the 250 ms progress throttle: see
+// $lib/server/managed/emitters.ts (rationale lives there). Keeping the FIRST
+// socket's emitToUser closure is safe because it resolves recipients at emit
+// time from `io` and the user id, never from the socket that made it; the
+// only thing the originating socket lends is the redaction subject on the
+// UNGATED path, and every socket in a user room carries the same one.
+const downloadProgressEmitters =
+	createUserEmitters<Sockets.KoboldCPP.DownloadProgress.Response>()
+// Keyed by filename. Broadcast only; the byte counter stays real-time for the
+// pull-based koboldCppGetDownloadProgressHandler.
+const downloadThrottle = createProgressThrottle()
 
 function registerDownloadProgressEmitter(
 	userId: number,
 	fn: (data: Sockets.KoboldCPP.DownloadProgress.Response) => void
 ) {
-	const existing = downloadProgressEmitters.get(userId)
-	if (existing) {
-		existing.connections++
-		return
-	}
-	downloadProgressEmitters.set(userId, { emit: fn, connections: 1 })
+	downloadProgressEmitters.register(userId, fn)
 }
 
 function unregisterDownloadProgressEmitter(userId: number) {
-	const existing = downloadProgressEmitters.get(userId)
-	if (!existing) return
-	existing.connections--
-	if (existing.connections <= 0) downloadProgressEmitters.delete(userId)
+	downloadProgressEmitters.unregister(userId)
 }
-
-// Progress ticks arrive on every TCP chunk of a streaming download (up to
-// hundreds of thousands of times for a multi-GB file) — each broadcast is
-// a synchronous JSON-serialize + Socket.IO emit, competing with the
-// download's own network I/O on Node's single event loop. Throttling the
-// broadcast (not the byte-counter update, which stays real-time for the
-// pull-based koboldCppGetDownloadProgressHandler) is the single biggest
-// win for actual download throughput.
-const PROGRESS_EMIT_THROTTLE_MS = 250
-const lastProgressEmitAt: Record<string, number> = {}
 
 function emitDownloadProgress() {
 	const downloads: Sockets.KoboldCPP.DownloadProgress.Response["downloads"] =
@@ -1307,11 +1306,7 @@ function emitDownloadProgress() {
 		const { abort: _abort, ...rest } = entry
 		downloads[key] = rest
 	}
-	for (const { emit } of downloadProgressEmitters.values()) {
-		try {
-			emit({ downloads })
-		} catch {}
-	}
+	downloadProgressEmitters.emit({ downloads })
 }
 
 // Gates emitDownloadProgress() itself, not the underlying byte counter —
@@ -1320,12 +1315,7 @@ function emitDownloadProgress() {
 // transitions (start/success/error, called via emitDownloadProgress()
 // directly) are never accidentally throttled away.
 function maybeEmitDownloadProgress(filename: string) {
-	const now = Date.now()
-	if (now - (lastProgressEmitAt[filename] ?? 0) < PROGRESS_EMIT_THROTTLE_MS) {
-		return
-	}
-	lastProgressEmitAt[filename] = now
-	emitDownloadProgress()
+	if (downloadThrottle.ready(filename)) emitDownloadProgress()
 }
 
 export const koboldCppSearchModelsHandler: Handler<
@@ -1393,31 +1383,8 @@ export const koboldCppSearchModelsHandler: Handler<
 		const models = (data as any[])
 			.filter((m) => !m.private && m.gated !== true && m.gated !== "auto")
 			.map((m) => {
-				const ggufFiles = (m.siblings as any[]).filter((s: any) =>
-					s.rfilename.endsWith(".gguf")
-				)
 				const pullOptions: Sockets.KoboldCPP.SearchModels.PullOption[] =
-					ggufFiles
-						.filter((s: any) => {
-							const stem =
-								s.rfilename
-									.replace(".gguf", "")
-									.split("-")
-									.pop()
-									?.toUpperCase() ?? ""
-							return /^(Q|IQ|BF|F)\d/.test(stem)
-						})
-						.map((s: any) => ({
-							label:
-								s.rfilename
-									.replace(".gguf", "")
-									.split("-")
-									.pop() ?? s.rfilename,
-							filename: s.rfilename,
-							downloadUrl: `https://huggingface.co/${m.id}/resolve/main/${s.rfilename}`,
-							sizeBytes:
-								typeof s.size === "number" ? s.size : undefined
-						}))
+					ggufQuantOptions(m.id, m.siblings)
 				return {
 					name: m.id,
 					description: m.description || m.pipeline_tag,
@@ -1438,202 +1405,36 @@ export const koboldCppSearchModelsHandler: Handler<
 
 // --- PARALLEL CHUNKED DOWNLOAD HELPERS ---
 
-type ResolvedDownload =
-	| { kind: "ranged"; resolvedUrl: string; total: number }
-	| {
-			kind: "fallback"
-			resolvedUrl: string
-			total: number
-			initialResponse: import("http").IncomingMessage
-	  }
+/**
+ * Projector downloads queued behind the text model they pair with (★A,
+ * 2026-11-11): projector filename → model filename. When the projector lands,
+ * `visionProjector` is set on the model's rows on every managed KoboldCPP, so
+ * a vision model fetched by Get reads pictures without a hand pairing.
+ */
+const projectorPairs = new Map<string, string>()
 
-// Issues a 1-byte range probe against downloadUrl (following at most one
-// redirect, same validation as the real download below) to cheaply learn
-// (a) whether the eventual host supports range requests at all and (b) the
-// true total size — read from content-range's "/TOTAL" suffix in the 206
-// case, since content-length for a 1-byte range response is just "1".
-// registerRequest is called with every ClientRequest issued here so the
-// caller can track them for cancellation before this promise settles.
-function resolveHuggingFaceDownload(
-	downloadUrl: string,
-	registerRequest: (req: import("http").ClientRequest) => void
-): Promise<ResolvedDownload> {
-	return new Promise((resolve, reject) => {
-		function probe(url: string, isRedirect: boolean) {
-			const lib = url.startsWith("https") ? https : http
-			const req = lib.get(
-				url,
-				{ headers: { Range: "bytes=0-0" } },
-				(res) => {
-					if (
-						!isRedirect &&
-						res.statusCode &&
-						res.statusCode >= 300 &&
-						res.statusCode < 400 &&
-						res.headers.location
-					) {
-						const redirectUrl = res.headers.location
-						let parsedRedirectUrl: URL
-						try {
-							parsedRedirectUrl = new URL(redirectUrl)
-						} catch {
-							res.resume()
-							reject(new Error("Invalid redirect URL"))
-							return
-						}
-						if (
-							!isAllowedHuggingFaceHost(
-								parsedRedirectUrl.hostname
-							)
-						) {
-							res.resume()
-							reject(
-								new Error(
-									"Redirect target is not a Hugging Face URL"
-								)
-							)
-							return
-						}
-						res.resume()
-						probe(redirectUrl, true)
-						return
-					}
-
-					if (res.statusCode === 206) {
-						const contentRange = res.headers["content-range"]
-						const match =
-							typeof contentRange === "string"
-								? contentRange.match(/\/(\d+)\s*$/)
-								: null
-						const total = match ? parseInt(match[1], 10) : 0
-						res.resume() // discard the 1-byte probe body
-						resolve({ kind: "ranged", resolvedUrl: url, total })
-						return
-					}
-
-					if (res.statusCode && res.statusCode < 300) {
-						const total = parseInt(
-							res.headers["content-length"] ?? "0",
-							10
-						)
-						// This response IS the full body starting at byte 0 —
-						// don't discard it, hand it to the fallback path.
-						resolve({
-							kind: "fallback",
-							resolvedUrl: url,
-							total,
-							initialResponse: res
-						})
-						return
-					}
-
-					res.resume()
-					reject(
-						new Error(
-							`Download request failed with status ${res.statusCode}`
-						)
-					)
-				}
-			)
-			req.on("error", reject)
-			registerRequest(req)
-		}
-		probe(downloadUrl, false)
+/** Pair a landed projector onto its model's rows where none is set yet. */
+async function pairProjectorOntoModel(projector: string, model: string) {
+	const { withVisionProjector, takesVisionProjector } = await import(
+		"$lib/server/koboldcpp/visionProjector"
+	)
+	const endpoints = await db.query.connections.findMany({
+		columns: { id: true, type: true }
 	})
-}
-
-// Downloads [resolvedUrl] as concurrent byte-range chunks into a
-// pre-allocated file, using a bounded worker pool. Each chunk is written at
-// its exact offset via a shared FileHandle's positional write (POSIX
-// pwrite), which is safe for concurrent non-overlapping writers on one fd —
-// unlike multiple concurrent fs.createWriteStream instances against the
-// same path, which aren't designed for that.
-async function downloadFileInParallelChunks(opts: {
-	resolvedUrl: string
-	total: number
-	destPath: string
-	filename: string
-	registerRequest: (req: import("http").ClientRequest) => void
-	isAborted: () => boolean
-}): Promise<void> {
-	const {
-		resolvedUrl,
-		total,
-		destPath,
-		filename,
-		registerRequest,
-		isAborted
-	} = opts
-	const chunkCount = Math.max(1, Math.ceil(total / PARALLEL_CHUNK_SIZE_BYTES))
-	const lib = resolvedUrl.startsWith("https") ? https : http
-	const AgentCtor = resolvedUrl.startsWith("https") ? https.Agent : http.Agent
-	const agent = new AgentCtor({
-		keepAlive: true,
-		maxSockets: MAX_PARALLEL_CHUNKS_PER_DOWNLOAD
-	})
-
-	const fileHandle = await fsPromises.open(destPath, "w")
-	try {
-		await fileHandle.truncate(total)
-
-		let nextChunkIndex = 0
-		function downloadChunk(idx: number): Promise<void> {
-			const start = idx * PARALLEL_CHUNK_SIZE_BYTES
-			const end = Math.min(start + PARALLEL_CHUNK_SIZE_BYTES, total) - 1
-			return new Promise((resolve, reject) => {
-				const req = lib.get(
-					resolvedUrl,
-					{ headers: { Range: `bytes=${start}-${end}` }, agent },
-					async (res) => {
-						if (res.statusCode !== 206) {
-							res.resume()
-							reject(
-								new Error(
-									`Chunk request failed with status ${res.statusCode}`
-								)
-							)
-							return
-						}
-						try {
-							let position = start
-							for await (const buf of res as AsyncIterable<Buffer>) {
-								await fileHandle.write(
-									buf,
-									0,
-									buf.length,
-									position
-								)
-								position += buf.length
-								activeDownloads[filename].downloaded +=
-									buf.length
-								maybeEmitDownloadProgress(filename)
-							}
-							resolve()
-						} catch (err) {
-							reject(err)
-						}
-					}
-				)
-				req.on("error", reject)
-				registerRequest(req)
-			})
+	for (const endpoint of endpoints) {
+		if (!takesVisionProjector(endpoint.type)) continue
+		const rows = await db.query.connectionModels.findMany({
+			where: (m, { and, eq }) =>
+				and(eq(m.connectionId, endpoint.id), eq(m.model, model))
+		})
+		for (const row of rows) {
+			const extra = (row.extraJson ?? null) as Record<string, unknown> | null
+			if (extra?.mmproj) continue
+			await db
+				.update(schema.connectionModels)
+				.set({ extraJson: withVisionProjector(extra, projector) })
+				.where(eq(schema.connectionModels.id, row.id))
 		}
-
-		async function worker(): Promise<void> {
-			while (!isAborted() && nextChunkIndex < chunkCount) {
-				const idx = nextChunkIndex++
-				await downloadChunk(idx)
-			}
-		}
-
-		const workerCount = Math.min(
-			MAX_PARALLEL_CHUNKS_PER_DOWNLOAD,
-			chunkCount
-		)
-		await Promise.all(Array.from({ length: workerCount }, () => worker()))
-	} finally {
-		await fileHandle.close().catch(() => {})
-		agent.destroy()
 	}
 }
 
@@ -1659,9 +1460,29 @@ export const koboldCppDownloadModelHandler: Handler<
 		// file — and re-checked against the finished bytes below. It also picks
 		// the DIRECTORY, and that half has no fallback: a download lands in the
 		// folder for its kind or it does not happen.
-		const kind = params.kind ?? "text"
-		const modelsDir = modelsDirFor(kind, settings)
+		const requestedKind = params.kind ?? "text"
+		// "speech" is a request only (never stored): the file goes where
+		// KoboldCPP's speech launch reads it (the text folder, as
+		// `modelsDirFor("embeddings")`) and is recorded as a hand-copied speech
+		// GGUF is by the folder scan - kind "text", declared.
+		const dirKind = requestedKind === "speech" ? "embeddings" : requestedKind
+		const kind: Sockets.KoboldCPP.ModelKindFilter =
+			requestedKind === "speech" ? "text" : requestedKind
+		const modelsDir = modelsDirFor(dirKind, settings)
 		if (!modelsDir) throw new Error("Models directory not configured")
+
+		// Before any byte is fetched: a speech or transcription model (or a
+		// codec file) is not a text or image model; nothing exists yet. The
+		// sentence is emitted as this event's `:error` BEFORE the throw: a bare
+		// throw reaches the client as register()'s generic sentence (MV V1).
+		const refusal = speechRefusal(
+			{ filename, downloadUrl, modelUrl, kind: requestedKind },
+			await getAudioLists(db)
+		)
+		if (refusal) {
+			emitToUser("koboldcpp:downloadModel:error", { error: refusal })
+			throw new Error(refusal)
+		}
 
 		// Root level only, checked BEFORE the containment check below because
 		// containment would pass it: `clip/foo.safetensors` resolves inside
@@ -1676,7 +1497,7 @@ export const koboldCppDownloadModelHandler: Handler<
 		}
 		// A .safetensors can only ever be an image model, so one arriving from
 		// the text tab is a download that could never have loaded.
-		if (!extensionAllowedForKind(filename, kind)) {
+		if (!extensionAllowedForKind(filename, dirKind)) {
 			throw new Error(
 				kind === "text"
 					? "KoboldCPP loads text models from .gguf only"
@@ -1688,7 +1509,7 @@ export const koboldCppDownloadModelHandler: Handler<
 		// checks inside this, a path-traversal or absolute-path filename could
 		// write outside the directory entirely. `mustExist: false` is the write
 		// form: this kind's directory only, never the other one's.
-		const destPath = await resolveModelPath(kind, filename, settings, {
+		const destPath = await resolveModelPath(dirKind, filename, settings, {
 			mustExist: false
 		})
 
@@ -1773,6 +1594,7 @@ export const koboldCppDownloadModelHandler: Handler<
 				})
 				.onConflictDoUpdate({
 					target: schema.localModels.filename,
+					targetWhere: sql`"format" <> 'onnx'`,
 					set: {
 						modelName,
 						modelUrl,
@@ -1867,7 +1689,10 @@ export const koboldCppDownloadModelHandler: Handler<
 							resolvedUrl: resolved.resolvedUrl,
 							total: resolved.total,
 							destPath,
-							filename,
+							onBytes: (n) => {
+								activeDownloads[filename].downloaded += n
+								maybeEmitDownloadProgress(filename)
+							},
 							registerRequest,
 							isAborted: () => aborted
 						}).then(resolve, reject)
@@ -1934,6 +1759,32 @@ export const koboldCppDownloadModelHandler: Handler<
 						],
 						force: true
 					})
+					// A finished text model lands on an empty Reply, dialog open
+					// or not (fillReplyOnArrival.ts). Its own try: never a failure
+					// of the download. Reply goes out BEFORE the list so the
+					// client sees it filled no later than it sees the model.
+					if (
+						requestedKind !== "speech" &&
+						!projectorPairs.has(filename) &&
+						(corrected ? verdict.kind : kind) === "text"
+					) {
+						try {
+							const filled = await fillReplyIfEmpty(db, filename)
+							if (filled) {
+								console.log(
+									`[koboldcpp] Reply was empty; "${filled.name}" now fills it`
+								)
+								await emitToUser("systemSettings:get", () =>
+									buildSystemSettingsGet()
+								)
+							}
+						} catch (fillErr) {
+							console.error(
+								"[koboldcpp] filling Reply on arrival:",
+								fillErr
+							)
+						}
+					}
 					await emitToUser("connections:list", () =>
 						buildConnectionsList()
 					)
@@ -1943,6 +1794,42 @@ export const koboldCppDownloadModelHandler: Handler<
 						syncErr
 					)
 				}
+				// A projector queued behind this model: fetch it next, into
+				// the same folder, and pair it when it lands.
+				const projector = params.visionProjector
+				if (projector && kind === "text" && !projector.filename.includes("/")) {
+					projectorPairs.set(projector.filename, filename)
+					try {
+						await koboldCppDownloadModelHandler.handler(
+							socket,
+							{
+								modelName: `${modelName || filename} — vision projector`,
+								filename: projector.filename,
+								downloadUrl: projector.downloadUrl,
+								modelUrl,
+								description: `Vision projector for ${modelName || filename}: lets it read pictures.`,
+								sizeBytes: projector.sizeBytes,
+								kind: "text"
+							},
+							emitToUser
+						)
+					} catch (err) {
+						projectorPairs.delete(projector.filename)
+						console.error("[koboldcpp] projector download refused:", err)
+					}
+				}
+				const pairedModel = projectorPairs.get(filename)
+				if (pairedModel) {
+					projectorPairs.delete(filename)
+					try {
+						await pairProjectorOntoModel(filename, pairedModel)
+						await emitToUser("connections:list", () =>
+							buildConnectionsList()
+						)
+					} catch (err) {
+						console.error("[koboldcpp] pairing the projector:", err)
+					}
+				}
 				await notifySettled()
 			} catch (err: any) {
 				// Whatever ended the download — cancel or a genuine chunk
@@ -1950,6 +1837,7 @@ export const koboldCppDownloadModelHandler: Handler<
 				// is orphaned; destroy it rather than leave it dangling.
 				for (const req of inFlightRequests) req.destroy()
 				const isCancelled = err.message === "cancelled"
+				projectorPairs.delete(filename)
 				activeDownloads[filename].status = isCancelled
 					? "cancelled"
 					: "error"
@@ -2028,7 +1916,7 @@ export const koboldCppClearDownloadHistoryHandler: Handler<
 		for (const key of Object.keys(activeDownloads)) {
 			if (activeDownloads[key].isDone) {
 				delete activeDownloads[key]
-				delete lastProgressEmitAt[key]
+				downloadThrottle.forget(key)
 			}
 		}
 		const res: Sockets.KoboldCPP.ClearDownloadHistory.Response = {
@@ -2064,6 +1952,13 @@ export const koboldCppSetManagedMode: Handler<
 			.update(schema.koboldCppSettings)
 			.set({
 				koboldCppManagedMode: params.mode,
+				...(params.mode === "managed"
+					? {
+							koboldCppManagerBaseUrl: managedBaseUrl(
+								settings.koboldCppManagedPort
+							)
+						}
+					: {}),
 				...(adminPassword
 					? { koboldCppManagedAdminPassword: adminPassword }
 					: {})
@@ -2094,7 +1989,7 @@ export const koboldCppSetManagedPort: Handler<
 			.update(schema.koboldCppSettings)
 			.set({
 				koboldCppManagedPort: port,
-				koboldCppManagerBaseUrl: `http://localhost:${port}`
+				koboldCppManagerBaseUrl: managedBaseUrl(port)
 			})
 			.where(eq(schema.koboldCppSettings.id, 1))
 		const res: Sockets.KoboldCPP.SetManagedPort.Response = { success: true }
@@ -2160,6 +2055,28 @@ export const koboldCppSetModelTtl: Handler<
 			.where(eq(schema.koboldCppSettings.id, 1))
 		const res: Sockets.KoboldCPP.SetModelTtl.Response = { success: true }
 		emitToUser("koboldcpp:setModelTtl", res)
+		await emitToUser("systemSettings:get", () => buildSystemSettingsGet())
+		return res
+	}
+}
+
+/**
+ * The admin's switch for keeping the text and the image model loaded together
+ * when the card has room (`koboldcpp/coLoad.ts`; owner ruling 2026-11-11).
+ */
+export const koboldCppSetCoLoad: Handler<
+	Sockets.KoboldCPP.SetCoLoad.Params,
+	Sockets.KoboldCPP.SetCoLoad.Response
+> = {
+	event: "koboldcpp:setCoLoad",
+	handler: async (socket, params, emitToUser) => {
+		if (!socket.user!.isAdmin) throw new Error("Unauthorized")
+		await db
+			.update(schema.koboldCppSettings)
+			.set({ koboldCppManagedCoLoad: !!params.enabled })
+			.where(eq(schema.koboldCppSettings.id, 1))
+		const res: Sockets.KoboldCPP.SetCoLoad.Response = { success: true }
+		emitToUser("koboldcpp:setCoLoad", res)
 		await emitToUser("systemSettings:get", () => buildSystemSettingsGet())
 		return res
 	}
@@ -2324,7 +2241,7 @@ export const koboldCppDownloadBinary: Handler<
 				await db
 					.update(schema.koboldCppSettings)
 					.set({
-						koboldCppManagerBaseUrl: `http://localhost:${port}`
+						koboldCppManagerBaseUrl: managedBaseUrl(port)
 					})
 					.where(eq(schema.koboldCppSettings.id, 1))
 				await emitToUser("systemSettings:get", () =>
@@ -2679,6 +2596,7 @@ export function registerKoboldCppHandlers(
 	register(socket, koboldCppSetManagedBinaryDir, emitToUser)
 	register(socket, koboldCppSetManagedAdminPassword, emitToUser)
 	register(socket, koboldCppSetModelTtl, emitToUser)
+	register(socket, koboldCppSetCoLoad, emitToUser)
 	register(socket, koboldCppSetSubprocessTimeout, emitToUser)
 	register(socket, koboldCppListBinaryVariants, emitToUser)
 	register(socket, koboldCppListReleaseVersions, emitToUser)

@@ -8,11 +8,20 @@
 	// views core's composer places, and the modals.
 	import { v4 as uuid } from "uuid"
 	import { rememberFiredAction } from "$lib/client/components/pipelines/actionRetry"
-	import { avatarSrc } from "$lib/client/utils/media"
-	import { hostElementContext, setHostParticipants } from "$lib/client/components/hostElements/context.svelte"
+	import {
+		castNameOf,
+		seatCardAsShown
+	} from "$lib/client/components/sessionPage/projections/characters"
+	import {
+		hostElementContext,
+		setHostParticipants
+	} from "$lib/client/components/hostElements/context.svelte"
 	import ChangeSpriteDialog from "$lib/client/components/sprites/ChangeSpriteDialog.svelte"
 	import { asShownSprite } from "$lib/shared/sprites"
-	import { openSessionState, sessionState } from "$lib/client/state/sessionState.svelte"
+	import {
+		openSessionState,
+		sessionState
+	} from "$lib/client/state/sessionState.svelte"
 	import {
 		SESSION_VIEWER_KEY,
 		SESSION_TURN_ORDER_KEY,
@@ -20,9 +29,14 @@
 		SESSION_DOSSIER_KEY,
 		SESSION_STATE_KEY,
 		SESSION_CHARACTERS_KEY,
-		WIDGET_REQUESTS_KEY
+		SESSION_LORE_ANNEX_KEY,
+		WIDGET_REQUESTS_KEY,
+		projectScopedSections
 	} from "$lib/shared/widgets/context"
 	import { guardWidgetRequests } from "$lib/client/components/sessionPage/requests/askers"
+	import { seatRefOf } from "$lib/client/components/sessionPage/projections/seatIdentity"
+	import { seatMemberOf } from "$lib/client/components/sessionPage/requests/seatMemberOf"
+	import { askSeatMemberSheet } from "$lib/client/components/sessionForms/seatMemberSheet.svelte"
 	import {
 		buildWidgetRequestAnswerer,
 		type WidgetRequestDeps
@@ -39,16 +53,23 @@
 		createSessionPageInbox,
 		provideSessionPageInbox
 	} from "$lib/client/components/sessionPage/sessionPageInbox.svelte"
+	import AppletLoading from "$lib/client/components/AppletLoading.svelte"
 	import { createSessionPageData } from "$lib/client/components/sessionPage/sessionPageData.svelte"
-	import { headerCastKeyOf } from "$lib/client/components/sessionPage/sessionPageProjections"
+	import {
+		headerCastKeyOf,
+		participantForRefIn,
+		seatCardIdOfRef
+	} from "$lib/client/components/sessionPage/sessionPageProjections"
 	import { presetHeaderNotice } from "$lib/client/components/sessionPage/presetNotice"
 	import { catchUpHeaderNotice } from "$lib/client/components/sessionPage/catchUpNotice"
+	import { rulesetConvertedHeaderNotice } from "$lib/client/components/sessionPage/rulesetConvertedNotice"
 	import type { CatchUpOffer } from "$lib/shared/sessions/archive"
 	import { rewindStripState } from "@serene-pub/core-catalog/conversation"
 	import { regeneratePress } from "$lib/shared/sessions/rewind"
 	import { rewindPresses } from "$lib/client/components/sessionPage/requests/rewindTurn"
 	import { createEnvelopeSections } from "$lib/client/components/sessionPage/envelopeSections.svelte"
 	import { createActionList } from "$lib/client/components/sessionPage/actionList.svelte"
+	import { showsAdvancedControls } from "$lib/client/advancedControls"
 	import {
 		createTurnFlow,
 		type FiredPress
@@ -67,8 +88,11 @@
 	import { page } from "$app/state"
 	import { useTypedSocket } from "$lib/client/sockets/loadSockets.client"
 	import { useInterest } from "$lib/client/sockets/interest.svelte"
+	import { useSessionFullscreen } from "$lib/client/sessions/fullscreen.svelte"
 	import * as Icons from "@lucide/svelte"
+	import { sessionViewMount } from "$lib/shared/plugins/sessionViewMount"
 	import PluginFrame from "$lib/client/components/frames/PluginFrame.svelte"
+	import { sessionViewHanded } from "$lib/client/components/frames/sessionViewHanded"
 	import TurnPicker from "$lib/client/components/sessionPage/TurnPicker.svelte"
 	import ProcessSceneModal from "$lib/client/components/modals/ProcessSceneModal.svelte"
 	import ConfirmDialog from "$lib/client/components/loadouts/sheet/ConfirmDialog.svelte"
@@ -86,9 +110,8 @@
 	import { runInspector } from "$lib/client/stores/runInspector.svelte"
 	import { terminateAllWorkers } from "$lib/client/components/host/uiWorkers"
 	import { sceneImages } from "$lib/client/stores/sceneImages"
-	import { toaster } from "$lib/client/utils/toaster"
+	import { notify } from "$lib/client/utils/notify"
 	import { sessionBookOf } from "$lib/client/sessions/store/derive"
-	import { resolveCharacterName } from "$lib/shared/utils/resolveCharacterName"
 	import SessionLayout from "$lib/client/sessionLayout/SessionLayout.svelte"
 	import { NARRATE_ACTION } from "$lib/shared/actions/identity"
 	import { SurfaceManager } from "$lib/client/surfaces/panelManager.svelte"
@@ -108,6 +131,16 @@
 
 	// Get session id from route params
 	let sessionId: number = $derived.by(() => Number(page.params.id))
+	// 🚧 M2d: the applet loading screen's flags for a session-mounted applet frame. They reset when the frame's
+	// document changes (a new `src` reloads it and it says `ready` again); a session switch on the same document
+	// keeps the booted frame, as before, so the screen does not come back over it.
+	let sessionFrameReady = $state(false)
+	let sessionFrameFatal = $state(false)
+	$effect(() => {
+		void data.sessionViewFrame?.src
+		sessionFrameReady = false
+		sessionFrameFatal = false
+	})
 
 	/**
 	 * The composer's draft as the page knows it, and the page's last write to
@@ -121,7 +154,10 @@
 	let composerDraft = $state<DraftWrite>({ content: "", write: 0 })
 	function writeDraft(content: string) {
 		newMessage = content
-		composerDraft = nextDraftWrite(untrack(() => composerDraft), content)
+		composerDraft = nextDraftWrite(
+			untrack(() => composerDraft),
+			content
+		)
 	}
 
 	/**
@@ -139,6 +175,8 @@
 	// beside it. Availability = the mode's declared panels (from sessions:view)
 	// merged with core's defaults; placement is this user's, persisted.
 	const surfaceManager = new SurfaceManager()
+	// Full screen (SHAPES L1): this viewer's choice for this session.
+	const fullscreen = $derived(useSessionFullscreen(sessionId))
 
 	// The ONE subscriber to every reply and push the page reads, declared
 	// ahead of every store that registers on it and of the session-load
@@ -190,12 +228,26 @@
 			: ""
 	)
 	let catchUpDismissedFor = $state<number | null>(null)
+	let rulesetNoticeDismissedFor = $state<number | null>(null)
 	const sessionLorebookId = $derived(session?.lorebookId ?? null)
 	// 🚧 pr-6 (B §B-3): the session's own book — its Session notes.
-	const sessionOwnBookId: number | null = $derived((session as { ownBookId?: number | null } | undefined)?.ownBookId ?? null)
+	const sessionOwnBookId: number | null = $derived(
+		(session as { ownBookId?: number | null } | undefined)?.ownBookId ??
+			null
+	)
+	/**
+	 * The book a scene review (Process scene window) resolves its cast in: the
+	 * lorebook the session reads, else its own book — every session has one,
+	 * so the review opens for a session with only its Session notes too.
+	 */
+	const sceneBookId: number | null = $derived(
+		sessionBookOf({ lorebookId: sessionLorebookId, ownBookId: sessionOwnBookId })
+	)
 	const sessionLorebookBranchId = $derived(session?.lorebookBranchId ?? null)
 	const loadedGenreId: string | null = $derived(
-		typeof (session as any)?.genreId === "string" ? (session as any).genreId : null
+		typeof (session as any)?.genreId === "string"
+			? (session as any).genreId
+			: null
 	)
 	const storyClockYear = $derived(session?.storyClockYear ?? null)
 	const storyClockMonth = $derived(session?.storyClockMonth ?? null)
@@ -203,7 +255,11 @@
 	/** A new object only when the clock moves, so readers of it re-derive only then. */
 	const sessionStoryClock = $derived(
 		storyClockYear != null
-			? { year: storyClockYear, month: storyClockMonth, day: storyClockDay }
+			? {
+					year: storyClockYear,
+					month: storyClockMonth,
+					day: storyClockDay
+				}
 			: null
 	)
 
@@ -224,13 +280,21 @@
 	// The stale-preset notice is the header's one line now (§3.16).
 	const headerNotice = $derived(
 		catchUpHeaderNotice(
-			sessionCatchUpKey ? (JSON.parse(sessionCatchUpKey) as CatchUpOffer) : null,
+			sessionCatchUpKey
+				? (JSON.parse(sessionCatchUpKey) as CatchUpOffer)
+				: null,
 			{
 				dismissed: catchUpDismissedFor === loadedSessionId,
 				dismiss: () => (catchUpDismissedFor = loadedSessionId),
-				press: (id) => socket.emit("sessions:closeOut", { sessionId: id })
+				press: (id) =>
+					socket.emit("sessions:closeOut", { sessionId: id })
 			}
-		) ?? presetHeaderNotice(data, !!userCtx.user?.isAdmin)
+		) ??
+			rulesetConvertedHeaderNotice(data.rulesetConverted, {
+				dismissed: rulesetNoticeDismissedFor === loadedSessionId,
+				dismiss: () => (rulesetNoticeDismissedFor = loadedSessionId)
+			}) ??
+			presetHeaderNotice(data, !!userCtx.user?.isAdmin)
 	)
 	$effect(() => {
 		openSessionCtx.headerNotice = headerNotice
@@ -248,7 +312,8 @@
 	const headerRewindKey: string = $derived.by(() => {
 		const strip = rewindStripState({
 			rewind: data.rewind,
-			isOwner: sessionUserId !== null && sessionUserId === userCtx.user?.id,
+			isOwner:
+				sessionUserId !== null && sessionUserId === userCtx.user?.id,
 			generating: data.generating,
 			story: true
 		})
@@ -257,24 +322,43 @@
 		const regenerate = regeneratePress({
 			offered: !!retakeAction,
 			generating: data.generating,
-			listedReason: retakeChip?.disabled ? (retakeChip.reason ?? null) : null,
+			listedReason: retakeChip?.disabled
+				? (retakeChip.reason ?? null)
+				: null,
 			rewind: data.rewind
 		})
 		return strip.shown
-			? JSON.stringify({ back: strip.back, forward: strip.forward, ahead: strip.ahead, aheadText: strip.aheadText, regenerate })
+			? JSON.stringify({
+					back: strip.back,
+					forward: strip.forward,
+					ahead: strip.ahead,
+					aheadText: strip.aheadText,
+					regenerate
+				})
 			: ""
 	})
 	const headerRewind: SessionHeaderRewind | null = $derived(
 		headerRewindKey
 			? (() => {
-					const parsed = JSON.parse(headerRewindKey) as Omit<SessionHeaderRewind, "goBack" | "goForward" | "regenerate"> & {
-						regenerate: { disabled: boolean; reason?: string } | null
+					const parsed = JSON.parse(headerRewindKey) as Omit<
+						SessionHeaderRewind,
+						"goBack" | "goForward" | "regenerate"
+					> & {
+						regenerate: {
+							disabled: boolean
+							reason?: string
+						} | null
 					}
 					return {
 						...parsed,
 						goBack: rewindPress.rewindTurn,
 						goForward: rewindPress.forwardTurn,
-						regenerate: parsed.regenerate ? { ...parsed.regenerate, press: () => turns.retake.press() } : null
+						regenerate: parsed.regenerate
+							? {
+									...parsed.regenerate,
+									press: () => turns.retake.press()
+								}
+							: null
 					}
 				})()
 			: null
@@ -291,11 +375,19 @@
 	 */
 	const ownLorebookId = $derived(
 		sessionUserId !== null && sessionUserId === userCtx.user?.id
-			? sessionBookOf({ lorebookId: sessionLorebookId, ownBookId: sessionOwnBookId })
+			? sessionBookOf({
+					lorebookId: sessionLorebookId,
+					ownBookId: sessionOwnBookId
+				})
 			: null
 	)
 
-	const actions = createActionList({ ...base, data })
+	const actions = createActionList({
+		...base,
+		data,
+		// Advanced controls off hides Branch from here (a preference, never a permission).
+		advancedControls: () => showsAdvancedControls(userSettingsCtx.settings)
+	})
 	/** The narrator's presses and answers (C2) — `createNarrations`. */
 	const narrations = createNarrations({
 		sessionId: () => sessionId,
@@ -303,9 +395,10 @@
 		writeDraft: (content) => writeDraft(content),
 		keepUnlanded: (press) => (narratorUnlandedPress = press),
 		say: (error) =>
-			toaster.error({
+			notify.error({
 				title: actions.listedAction(NARRATE_ACTION)?.name ?? "Narrate",
-				description: error
+				description: error,
+				source: "socket:sessions:fireNarratorResponse:error"
 			}),
 		send: (params) => socket.emit("sessions:fireNarratorResponse", params)
 	})
@@ -350,9 +443,16 @@
 		sceneSummarizesCtx,
 		sessionSummarizesCtx
 	})
-	const layout = createSessionLayoutData({ ...base, surfaceManager, data })
+	const layout = createSessionLayoutData({
+		...base,
+		surfaceManager,
+		data,
+		isAdmin: () => !!userCtx.user?.isAdmin
+	})
 	const asks = createPageAsks(base)
-	onDestroy(() => asks.drop("the session page closed before the server answered"))
+	onDestroy(() =>
+		asks.drop("the session page closed before the server answered")
+	)
 	/**
 	 * 🚧 The calendar of the book the session reads (PROPOSAL-live-scenes
 	 * §15 G9), for the conversation's dates: read once per session and book
@@ -364,8 +464,7 @@
 		void sessionLorebookId
 		if (id == null) return
 		untrack(() => {
-			asks
-				.readStoryClock({ sessionId: id })
+			asks.readStoryClock({ sessionId: id })
 				.then((r) => data.setStoryCalendar(id, r?.calendar ?? null))
 				.catch(() => {})
 		})
@@ -412,6 +511,8 @@
 		// 🚧 Kept by its run id, so a halted run's card can offer Retry.
 		rememberFiredAction(params)
 		socket.emit("sessions:fireAction", params)
+		// 🚧 M2a a6: the run's name, so the press's answer finds whoever is waiting on it.
+		return params.runId
 	}
 
 	const press = createPressRouting({
@@ -429,8 +530,9 @@
 			// narrator — and what happens is the argument, so it fires. The
 			// draft the argument came from is spent when the narration lands,
 			// and kept when it is refused or fails.
-			const direction = narrateDirectly(identity, route)
-			if (direction) narrations.directed(direction, !!supplied?.fromDraft)
+			const direction = narrateDirectly(identity, route, supplied)
+			if (direction !== null)
+				narrations.directed(direction, !!supplied?.fromDraft)
 			else turns.openNarrateModal()
 		}
 	})
@@ -460,6 +562,35 @@
 	setContext(SESSION_ATTENDANCE_KEY, envelope.attendance)
 	setContext("sessionLocale", envelope.locale)
 	setContext("sessionAnnex", envelope.annex)
+	setContext(SESSION_LORE_ANNEX_KEY, envelope.loreAnnex)
+	// 🚧 M0 (L8): the session-view frame of a genre that declares a lorebook is
+	// posted `lore.v1` without an admin grant — through the ONE supplier.
+	const sessionViewScoped = $derived(
+		data.declaresLorebook
+			? {
+					lore: projectScopedSections(
+						["lore"],
+						() => data.lorebookAnnex
+					)?.lore
+				}
+			: undefined
+	)
+	// 🚧 M1 fix: the session-view frame also writes its own lines (`send`) on the
+	// session's channels, as the viewer — core's composer is absent there.
+	const sessionViewGrants = $derived(
+		sessionViewHanded({
+			declaresLorebook: data.declaresLorebook,
+			channels: data.sessionChannels
+		})
+	)
+	// 🚧 m3-core: an applet genre's session view also holds `applet` (plan §9).
+	const sessionViewMountOf = $derived(
+		sessionViewMount({
+			applet: !!data.modeShape?.applet,
+			sessionGrants: sessionViewGrants.grants,
+			appletGrants: data.sessionViewFrame?.appletGrants
+		})
+	)
 	setContext(SESSION_DOSSIER_KEY, envelope.dossier)
 	setContext(SESSION_STATE_KEY, envelope.state)
 	setContext(SESSION_CHARACTERS_KEY, envelope.characters)
@@ -474,6 +605,27 @@
 	 * is a function, read when a request arrives — never when this is built,
 	 * so it may name locals declared further down.
 	 */
+	/**
+	 * The ref of the seat that holds a card — a character seat, else a player
+	 * seat voicing it, a live one first (`open-character` names a card, and
+	 * stays a card until S5). ⏳ Else `character:<card>`, a card-form payload's.
+	 */
+	function seatRefOfCard(characterId: number): string {
+		const held = [
+			...(session?.sessionCharacters ?? [])
+				.filter((s) => s.characterId === characterId)
+				.map((seat) => ({ seat, form: "character" as const })),
+			...(session?.sessionPersonas ?? [])
+				.filter((s) => s.personaId === characterId)
+				.map((seat) => ({ seat, form: "player" as const }))
+		]
+		const found = held.find((h) => !h.seat.removedAt) ?? held[0]
+		return (
+			(found && seatRefOf(found.seat, found.form)) ??
+			`character:${characterId}`
+		)
+	}
+
 	const widgetRequestDeps: WidgetRequestDeps = {
 		sessionId: () => sessionId ?? null,
 		findMessage: (id) => session?.sessionMessages.find((m) => m.id === id),
@@ -483,29 +635,48 @@
 		characters: () => envelope.characters.current,
 		characterForRef: (ref) => data.characterForRef(ref),
 		isAdmin: () => !!userCtx.user?.isAdmin,
-		contextDebugging: () => !!systemSettingsCtx.settings?.contextDebuggingEnabled,
+		panelsCtx: () => panelsCtx,
+		viewerId: () => userCtx.user?.id ?? null,
+		// The Author's note widget's Scenario field (PLAN-session-layout-simplify
+		// D13): read from the page's session; the write goes through the
+		// existing `sessions:update` (owner-only there).
+		readScenario: () =>
+			session
+				? {
+						scenario:
+							(session as { scenario?: string | null })
+								.scenario ?? "",
+						canEdit:
+							sessionUserId != null &&
+							sessionUserId === (userCtx.user?.id ?? null)
+					}
+				: null,
+		contextDebugging: () =>
+			!!systemSettingsCtx.settings?.contextDebuggingEnabled,
 		canControlMessage: (msg) => data.canControlMessage(msg),
 		// A name opens the person as this story knows them: the cast member
-		// when the session's own book holds one for the card, else the card.
-		// `ownLorebookId` is null for a guest (they may not read the book), so
-		// a guest lands on the card as before.
-		castMemberOf: (characterId) => {
-			const lorebookId = ownLorebookId
-			if (lorebookId === null) return null
-			const member = scenes.lorebookBindingList.find(
-				(b) => b.characterId === characterId
-			)
-			return member ? { lorebookId, castId: member.id } : null
+		// their seat holds, wherever its book lives, for a guest as for the
+		// owner — the server says whether the viewer can open that book
+		// (the member's page) or only read its sheet; a seat with no member
+		// yet opens the card.
+		castMemberOf: (characterId) =>
+			seatMemberOf(socket, sessionId, seatRefOfCard(characterId)),
+		openSeatMemberSheet: (characterId) => {
+			if (sessionId == null) return
+			askSeatMemberSheet({ sessionId, ref: seatRefOfCard(characterId) })
+			panelsCtx.openPanel({ key: "sessions", toggle: false })
 		},
 		openCastMember: ({ lorebookId, castId }) => {
 			// Address first, then open (openJumpHit's rule).
 			panelsCtx.digest.lore = { lorebookId, scope: "cast", castId }
 			panelsCtx.openPanel({ key: "lorebooks", toggle: false })
 		},
-		openCharactersPanel: () => panelsCtx.openPanel({ key: "characters", toggle: false }),
+		openCharactersPanel: () =>
+			panelsCtx.openPanel({ key: "characters", toggle: false }),
 		viewCharacter: (id) => (panelsCtx.digest.viewCharacterId = id),
 		showLore: (target) => (panelsCtx.digest.lore = target as any),
-		openLorebooksPanel: () => panelsCtx.openPanel({ key: "lorebooks", toggle: false }),
+		openLorebooksPanel: () =>
+			panelsCtx.openPanel({ key: "lorebooks", toggle: false }),
 		viewAvatar: (who) => controls.handleAvatarClick(who),
 		viewImage: (src, gallery) => controls.handleImageClick(src, gallery),
 		showReport: (report) => {
@@ -534,7 +705,8 @@
 		closeScene: asks.closeScene,
 		moveSceneBoundary: asks.moveSceneBoundary,
 		renameScene: asks.renameScene,
-		confirmRemoveScene: (scene, into) => scenes.confirmRemoveScene(scene, into),
+		confirmRemoveScene: (scene, into) =>
+			scenes.confirmRemoveScene(scene, into),
 		deleteScene: asks.deleteScene,
 		mergeScene: asks.mergeScene,
 		sceneList: () => scenes.sceneList,
@@ -543,7 +715,8 @@
 		openExtendGraph: () => scenes.openExtendGraph(),
 		noteStoryClock: (own) => data.setStoryClock(own),
 		noteStoryCalendar: (calendar) => {
-			if (loadedSessionId != null) data.setStoryCalendar(loadedSessionId, calendar)
+			if (loadedSessionId != null)
+				data.setStoryCalendar(loadedSessionId, calendar)
 		},
 		readOpenScenes: () => sceneCues.readOpenScenes(),
 		summarizeScenes: (sceneIds) => sceneCues.summarize(sceneIds),
@@ -575,6 +748,8 @@
 		readCharacterGallery: asks.readCharacterGallery,
 		readStatTrail: asks.readStatTrail,
 		readRoutineLog: asks.readRoutineLog,
+		readSessionRuns: asks.readSessionRuns,
+		readRunReceipt: asks.readRunReceipt,
 		writeBackdrop: asks.writeBackdrop,
 		// 🚧 A seat's portrait (PLAN-sheet-widget §12, 2026-10-18).
 		writeOwnerFace: asks.writeOwnerFace,
@@ -583,9 +758,43 @@
 		// 🚧 A tie side shown or hidden (ties on the graph, screen 2).
 		writeTieShown: asks.writeTieShown,
 		// A carry switch flipped from the Stats widget (RF fix 8).
-		writeCarry: asks.writeCarry
+		writeCarry: asks.writeCarry,
+		// 🚧 The open session's full screen (SHAPES L1), for `session-fullscreen`.
+		fullscreen: () => (sessionId ? fullscreen : null)
 	}
-	setContext(WIDGET_REQUESTS_KEY, guardWidgetRequests(buildWidgetRequestAnswerer(widgetRequestDeps)))
+	setContext(
+		WIDGET_REQUESTS_KEY,
+		guardWidgetRequests(buildWidgetRequestAnswerer(widgetRequestDeps))
+	)
+
+	// A genre that proposes full screen (`shape.fullscreen: 'propose'`) opens
+	// it on this viewer's FIRST open of the session (no stored choice); the
+	// viewer's choice wins afterwards. Once per session id: a plain `let`.
+	let proposedFor: number | null = null
+	$effect(() => {
+		if (!data.proposesFullscreen) return
+		const id = sessionId
+		untrack(() => {
+			if (proposedFor === id) return
+			proposedFor = id
+			fullscreen.propose()
+		})
+	})
+
+	// Every widget and frame hears `fullscreen` when it CHANGES (never at
+	// mount): the first run for a session id only records the state.
+	let announcedFor: number | null = null
+	$effect(() => {
+		const on = fullscreen.on
+		const id = sessionId
+		untrack(() => {
+			if (announcedFor !== id) {
+				announcedFor = id
+				return
+			}
+			surfaceManager.announceFullscreen(on)
+		})
+	})
 
 	/**
 	 * Another session opened in this page (the route keeps the component):
@@ -651,11 +860,13 @@
 		headerCastKeyOf(
 			session,
 			turns.shouldShowNextCharacterBlock
-				? (turns.nextCharacter?.id ?? null)
+				? (turns.turnOrder?.order[0]?.ref ?? null)
 				: null
 		)
 	)
-	let headerCast: OpenSessionCastMember[] = $derived(JSON.parse(headerCastKey))
+	let headerCast: OpenSessionCastMember[] = $derived(
+		JSON.parse(headerCastKey)
+	)
 
 	onDestroy(() => terminateAllWorkers())
 
@@ -665,14 +876,12 @@
 	// (another session opened) is made before this one is destroyed, and a
 	// clear at destroy wiped the new page's lookup — every avatar fell back
 	// to "?" (H's walk, 2026-10-25). Effects run after the old page's teardown.
-	const participantOf = (ref: string) => {
-		const who = data.characterForRef(ref)
-		return who ? { name: resolveCharacterName(who, who.name ?? ""), avatarUrl: avatarSrc(who) ?? null } : null
-	}
+	const participantOf = (ref: string) => participantForRefIn(session, ref)
 	$effect(() => {
 		setHostParticipants(participantOf)
 		return () => {
-			if (hostElementContext.participant === participantOf) setHostParticipants(undefined)
+			if (hostElementContext.participant === participantOf)
+				setHostParticipants(undefined)
 		}
 	})
 
@@ -710,7 +919,8 @@
 			     frame owning the whole message section, layout-sized, fed
 			     over its channel. Core's chrome deliberately absent — this is
 			     the total-conversion lane. -->
-			<div class="min-h-0 flex-1">
+			<!-- 🚧 M2d: an applet genre's frame gets the applet loading screen until its `ready`. -->
+			<div class="relative min-h-0 flex-1">
 				<PluginFrame
 					src={data.sessionViewFrame.src}
 					title={data.sessionViewFrame.title ?? "Session view"}
@@ -723,7 +933,21 @@
 					actionDispatch={press.actionDispatch}
 					onAction={press.handleFrameAction}
 					source={surfaceManager}
+					scoped={sessionViewScoped}
+					apis={sessionViewMountOf.apis}
+					grants={sessionViewMountOf.grants as never}
+					inSession={true}
+					writeChannels={sessionViewGrants.writeChannels}
+					onready={() => (sessionFrameReady = true)}
+					onfatal={() => (sessionFrameFatal = true)}
 				/>
+				{#if data.modeShape?.applet}
+					<AppletLoading
+						title={data.sessionViewFrame.title ?? "App"}
+						ready={sessionFrameReady}
+						fatal={sessionFrameFatal}
+					/>
+				{/if}
 			</div>
 		{:else}
 			<!-- The modular session layout (mockup 2026-08-28): the conversation
@@ -777,14 +1001,14 @@
 		{sessionLorebookBranchId}
 	/>
 
-	{#if scenes.showProcessSceneModal && scenes.processSceneId !== null && sessionLorebookId}
+	{#if scenes.showProcessSceneModal && scenes.processSceneId !== null && sceneBookId}
 		<ProcessSceneModal
 			open={scenes.showProcessSceneModal}
 			onOpenChange={(e) => (scenes.showProcessSceneModal = e.open)}
 			sceneId={scenes.processSceneId}
 			activityId={scenes.processActivityId}
 			pendingResult={scenes.processPendingResult}
-			lorebookId={sessionLorebookId}
+			lorebookId={sceneBookId}
 			lorebookBindingList={scenes.lorebookBindingList}
 			onApplied={() => scenes.refreshScenes()}
 			onDiscarded={() => {
@@ -820,7 +1044,10 @@
 		}}
 		resumeActivity={scenes.resumeSummarizeActivity}
 		{sessionId}
-		lorebookId={sessionBookOf({ lorebookId: sessionLorebookId, ownBookId: sessionOwnBookId })}
+		lorebookId={sessionBookOf({
+			lorebookId: sessionLorebookId,
+			ownBookId: sessionOwnBookId
+		})}
 		ownBookId={sessionOwnBookId}
 		branchId={sessionLorebookBranchId}
 		storyClock={sessionStoryClock}
@@ -831,14 +1058,25 @@
 			scenes.exitSummarizationMode()
 		}}
 		onSceneProcessStarted={(sceneId) => scenes.sceneProcessStarted(sceneId)}
-		onLorebookSet={(id) => data.setLorebook(id)}
 		sessionCharacters={(session?.sessionCharacters ?? []).map((cc) => ({
 			id: cc.character.id,
-			name: resolveCharacterName(cc.character, cc.character.name)
+			name: castNameOf(
+				session ?? {},
+				cc.character.id,
+				cc.character,
+				cc.character.name
+			)
 		}))}
 		sessionPersonas={(session?.sessionPersonas ?? []).map((cp) => ({
 			id: cp.persona.id,
-			name: cp.persona.name
+			name: session?.castNames?.[cp.persona.id]
+				? castNameOf(
+						session,
+						cp.persona.id,
+						cp.persona,
+						cp.persona.name
+					)
+				: cp.persona.name
 		}))}
 		hasSceneMessageGap={scenes.hasSceneGap}
 	/>
@@ -864,7 +1102,21 @@
 	     which unmounts the moment a turn is fired. -->
 	<TurnPicker
 		open={turns.showTurnPicker}
-		candidates={turns.turnOrder?.candidates ?? []}
+		candidates={(turns.turnOrder?.candidates ?? []).map((c) => {
+			const id = seatCardIdOfRef(session, c.ref)
+			return session != null && c.kind !== "persona" && id != null
+				? {
+						...c,
+						name: castNameOf(
+							session,
+							id,
+							{ name: c.name, nickname: c.nickname },
+							c.name
+						),
+						nickname: undefined
+					}
+				: c
+		})}
 		headRef={turns.turnOrder?.order[0]?.ref}
 		avatarFor={data.characterForRef}
 		offerNarrator={!!turns.narratorTurn || turns.narratorFunction}
@@ -880,7 +1132,9 @@
 			messageId={controls.spriteLine.id}
 			characterId={controls.spriteLine.characterId}
 			characterName={data.getMessageCharacter(controls.spriteLine)?.name}
-			current={asShownSprite((controls.spriteLine.metadata as any)?.sprite)}
+			current={asShownSprite(
+				(controls.spriteLine.metadata as any)?.sprite
+			)}
 			onClose={() => (controls.spriteLine = null)}
 		/>
 	{/if}
@@ -888,7 +1142,12 @@
 	<PickSpeakerModal
 		open={turns.showPickSpeakerModal}
 		onOpenChange={(open) => (turns.showPickSpeakerModal = open)}
-		sessionCharacters={session?.sessionCharacters}
+		sessionCharacters={session?.sessionCharacters?.map((cc) =>
+			cc.character
+				? { ...cc, character: seatCardAsShown(session, cc.character) }
+				: cc
+		)}
+		cardlessSeatShown={session?.cardlessSeatShown}
 		bind:pickSpeakerSearch={turns.pickSpeakerSearch}
 		narratorTurn={!!turns.narratorTurn}
 		narratorFunction={turns.narratorFunction}
@@ -911,6 +1170,8 @@
 		cast={press.collectCast}
 		ownVoice={data.ownVoice}
 		initialText={press.collecting?.initialText ?? ""}
+		subject={press.collectSubject}
+		rememberKey={press.collectRememberKey}
 		onSubmit={press.submitCollected}
 		onCancel={() => (press.collecting = null)}
 	/>
@@ -964,19 +1225,19 @@
 	     picker holds a standing `characters:list` interest and its empty
 	     state would speak of a system the session does not have. -->
 	{#if data.personasInMode}
-	<PersonaSelectModal
-		open={turns.showAddPersonaModal}
-		onclose={() => (turns.showAddPersonaModal = false)}
-		onSelect={turns.handleAddPersona}
-		excludeIds={(session?.sessionPersonas ?? [])
-			.filter((cp) => !cp.removedAt)
-			.map((cp) => cp.personaId)
-			.filter((id): id is number => id != null)}
-		title="Choose who you play as"
-		description={composer.personaAskedBySend
-			? "Choose who you play as before you send. Your message stays in the box."
-			: "Pick a character to play in this session. Your messages are sent as them."}
-	/>
+		<PersonaSelectModal
+			open={turns.showAddPersonaModal}
+			onclose={() => (turns.showAddPersonaModal = false)}
+			onSelect={turns.handleAddPersona}
+			excludeIds={(session?.sessionPersonas ?? [])
+				.filter((cp) => !cp.removedAt)
+				.map((cp) => cp.personaId)
+				.filter((id): id is number => id != null)}
+			title="Choose who you play as"
+			description={composer.personaAskedBySend
+				? "Choose who you play as before you send. Your message stays in the box."
+				: "Pick a character to play in this session. Your messages are sent as them."}
+		/>
 	{/if}
 
 	<BranchSessionModal

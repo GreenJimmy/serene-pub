@@ -1,6 +1,8 @@
+import { readFileSync } from "node:fs"
 import { describe, expect, test } from "vitest"
 import {
 	MESSAGE_STYLE_PRESETS,
+	SCENE_PORTRAITS_STYLE_PRESETS,
 	OFF_FOLIO,
 	folioGuarded,
 	legacyLayoutAttr,
@@ -11,6 +13,8 @@ import {
 import { systemStyleSlug, type WidgetDecl } from "./types"
 import type { ResolvableStyle } from "./resolve"
 import { resolveStyle } from "./resolve"
+import { getGenre } from "@serene-pub/sdk"
+import "@serene-pub/core-catalog"
 
 const row = (id: number, widgetSlug: string, slug: string): ResolvableStyle => ({
 	id,
@@ -39,6 +43,12 @@ describe("withCorePresets", () => {
 			id: "scene-portraits",
 			title: "Scene Portraits",
 			component: "scene-portraits",
+			presets: [{ slug: "default", title: "Default", css: "" }]
+		},
+		{
+			id: "stats",
+			title: "Stats",
+			component: "stats",
 			presets: [{ slug: "default", title: "Default", css: "" }]
 		}
 	]
@@ -81,8 +91,46 @@ describe("withCorePresets", () => {
 	test("leaves a widget the app ships no packs for untouched", () => {
 		const out = withCorePresets(decls)
 		expect(
-			out.find((d) => d.id === "scene-portraits")?.presets?.map((p) => p.slug)
+			out.find((d) => d.id === "stats")?.presets?.map((p) => p.slug)
 		).toEqual(["default"])
+	})
+
+	test("Scene Portraits keeps its one default, as it seeds today, and adds Open stage", () => {
+		const presets = withCorePresets(decls).find(
+			(d) => d.id === "scene-portraits"
+		)!.presets!
+		expect(presets.filter((p) => p.slug === "default")).toHaveLength(1)
+		expect(presets[0]).toEqual({ slug: "default", title: "Default", css: "" })
+		const open = presets.find((p) => p.slug === "open-stage")
+		expect(open?.title).toBe("Open stage")
+		expect(open?.vars).toEqual({
+			"--sp-widget-background": "transparent",
+			"--sp-widget-border": "none"
+		})
+	})
+
+	test("the Visual novel layout pins the slug Open stage seeds under", () => {
+		const pin = getGenre("core:genre/story")?.layouts?.find(
+			(l) => l.slug === "visual-novel"
+		)?.preset.widgetStyles?.["scene-portraits"]?.slug
+		expect(pin).toBe(systemStyleSlug("scene-portraits", "open-stage"))
+	})
+
+	test("Open stage names only widget parts and no colour literal", () => {
+		const css = SCENE_PORTRAITS_STYLE_PRESETS.find(
+			(p) => p.slug === "open-stage"
+		)!.css
+		const body = css.replace(/\/\*[\s\S]*?\*\//g, "")
+		const selectors = body
+			.split("}")
+			.map((b) => b.split("{")[0].trim())
+			.filter(Boolean)
+		expect(selectors.length).toBeGreaterThan(0)
+		for (const sel of selectors) {
+			expect(sel).not.toMatch(/(^|[\s>,])[.#]/)
+			expect(sel).toContain("data-widget-part~=")
+		}
+		expect(body).not.toMatch(/#[0-9a-f]{3,8}\b|rgb\(|hsl\(/i)
 	})
 
 	test("does not mutate the decls it is given", () => {
@@ -304,6 +352,61 @@ describe("folded sections in every pack (B4)", () => {
 			expect(css).not.toMatch(
 				/messages\.(message-disclosure|part-disclosure|fold-list)/
 			)
+		}
+	)
+})
+
+describe("the spoken line is quiet in the default sheet (owner 2026-10-29)", () => {
+	const HIDDEN = ["spoken-state", "spoken-audio", "spoken-time", "spoken-menu", "spoken-stop"]
+	const KEPT = ["spoken-voice", "spoken-mood", "spoken-caption", "spoken-missing", "message-speech-player"]
+	const blocksOf = (css: string) =>
+		[...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1], body: m[2] }))
+	const sheet = readFileSync("src/lib/client/styles/widgets.css", "utf8")
+	// Straight inside `@layer sp-widgets`, outside any @container / @media:
+	// the hide holds at every width and pointer.
+	const topLevel: { sel: string; body: string }[] = []
+	{
+		let depth = 0
+		let at = 0
+		for (const m of sheet.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+			for (const ch of sheet.slice(at, m.index!)) depth += ch === "{" ? 1 : ch === "}" ? -1 : 0
+			at = m.index! + m[0].length
+			if (depth === 1) topLevel.push({ sel: m[1], body: m[2] })
+		}
+	}
+
+	test("the base sheet hides the player row: glyph, player, clock, ⋯ and Stop", () => {
+		for (const part of HIDDEN) {
+			const hit = topLevel.some(
+				(b) => /display:\s*none/.test(b.body) && b.sel.includes(`messages.${part}"`)
+			)
+			expect(hit, part).toBe(true)
+		}
+	})
+
+	test("Speaking… is clipped for a screen reader, never display:none", () => {
+		const pending = topLevel.filter((b) => b.sel.includes(`messages.spoken-pending"`))
+		expect(pending.some((b) => b.body.includes("clip-path"))).toBe(true)
+		expect(pending.some((b) => /display:\s*none/.test(b.body))).toBe(false)
+	})
+
+	test("the chips, caption, missing note and the menu player are never hidden", () => {
+		for (const f of ["src/lib/client/sessionLayout/messageLayouts.css", "src/lib/client/styles/widgets.css"]) {
+			for (const { sel, body } of blocksOf(readFileSync(f, "utf8"))) {
+				if (!/display:\s*none|clip-path/.test(body)) continue
+				for (const part of KEPT) expect(sel.includes(`messages.${part}"`), `${f}: ${part}`).toBe(false)
+			}
+		}
+	})
+
+	test.each(MESSAGE_STYLE_PRESETS.map((p) => [p.slug, p.css] as const))(
+		"%s carries no tuck of its own and hides none of the kept parts",
+		(_slug, css) => {
+			expect(css.includes("the player row is tucked")).toBe(false)
+			for (const { sel, body } of blocksOf(css)) {
+				if (!/display:\s*none|clip-path/.test(body)) continue
+				for (const part of KEPT) expect(sel.includes(`messages.${part}"`)).toBe(false)
+			}
 		}
 	)
 })

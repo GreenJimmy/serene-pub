@@ -15,7 +15,9 @@
 	 */
 
 	import { i18nTextIn } from "$lib/shared/i18n/i18nText"
+	import CodeField from "$lib/client/components/codeField/CodeField.svelte"
 	import Select from "$lib/client/components/inputs/Select.svelte"
+	import { SvelteSet } from "svelte/reactivity"
 	import { enumOptions } from "$lib/shared/i18n/enumOptions"
 
 	interface FieldDecl {
@@ -29,6 +31,7 @@
 			| "string[]"
 			| "secret"
 			| "object"
+			| "json"
 		label?: string | ({ en: string } & Record<string, string>)
 		description?: string | ({ en: string } & Record<string, string>)
 		min?: number
@@ -45,8 +48,12 @@
 		advanced?: true
 		showIf?: { field: string; equals: unknown }
 		format?: "json"
+		/** For `json`: the most its JSON text may weigh, in bytes. */
+		maxBytes?: number
 		/** Shown while nothing is stored: the value a run reads (B16x). */
 		default?: unknown
+		/** 🚧 A string's blank, named: the first choice stores blank, the second shows a box (2026-11-04). */
+		unset?: { label: string | ({ en: string } & Record<string, string>); other: string | ({ en: string } & Record<string, string>) }
 		/**
 		 * For `object`: its members, drawn as one fieldset under the field's
 		 * label. A member's `group` is a fold inside it (closed until opened),
@@ -107,9 +114,37 @@
 	const shown = (key: string): unknown =>
 		values[key] !== undefined ? values[key] : schema[key]?.default
 
+	/** A string field that names its blank; `unset` on any other type is ignored. */
+	const namesUnset = (decl: FieldDecl) => decl.type === "string" && !!decl.unset
+
+	/** Controls whose second choice was picked while nothing is stored yet, by control id. */
+	const pickedOther = new SvelteSet<string>()
+
 	/** One level of `showIf`, no rules engine — the SDK's own rule. */
 	const visible = (decl: FieldDecl): boolean =>
 		!decl.showIf || shown(decl.showIf.field) === decl.showIf.equals
+
+	/** The id of the `json` field the person is in; its parse error waits until they leave (§6.12). */
+	let jsonFocusId = $state("")
+	/** The `json` field typed in since it was entered: only a touched field commits when left. */
+	let jsonTouchedId = $state("")
+	/** A `json` field's form value is JSON text (SDK `valuesForForm`); a stray non-text default is formatted. */
+	const jsonTextOf = (v: unknown): string =>
+		typeof v === "string" ? v : v === undefined || v === null ? "" : (JSON.stringify(v, null, 2) ?? "")
+	function jsonIssue(decl: FieldDecl, v: unknown): string | null {
+		const t = jsonTextOf(v)
+		if (t.trim() === "") return null
+		try {
+			const parsed = JSON.parse(t)
+			if (decl.maxBytes != null) {
+				const size = new TextEncoder().encode(JSON.stringify(parsed)).length
+				if (size > decl.maxBytes) return `This is ${size} bytes of JSON; the most is ${decl.maxBytes}.`
+			}
+			return null
+		} catch (e) {
+			return `This is not valid JSON (${e instanceof Error ? e.message : String(e)}).`
+		}
+	}
 
 	const asLines = (v: unknown): string =>
 		Array.isArray(v) ? v.join("\n") : String(v ?? "")
@@ -193,6 +228,87 @@
 	}
 </script>
 
+<!-- A `json` field: a code field over its JSON text, committed when left. -->
+{#snippet jsonCode(
+	id: string,
+	key: string,
+	decl: FieldDecl,
+	value: unknown,
+	set: (v: unknown) => void,
+	live: (v: unknown) => void
+)}
+	{@const issue = jsonFocusId === id ? null : jsonIssue(decl, value)}
+	<div
+		class="flex flex-col gap-1"
+		onfocusin={() => (jsonFocusId = id)}
+		onfocusout={() => {
+			if (jsonFocusId === id) jsonFocusId = ""
+			if (jsonTouchedId === id) {
+				jsonTouchedId = ""
+				set(jsonTextOf(value))
+			}
+		}}
+	>
+		<CodeField
+			{id}
+			value={jsonTextOf(value)}
+			oninput={(v) => {
+				jsonTouchedId = id
+				live(v)
+			}}
+			rows={6}
+			label={text(decl.label, key)}
+			describedBy={issue ? `${id}-issue` : undefined}
+			invalid={!!issue}
+			readonly={disabled}
+		/>
+		{#if issue}
+			<p id="{id}-issue" class="text-error-600-400 text-xs">{issue}</p>
+		{/if}
+	</div>
+{/snippet}
+
+<!-- A string field with a named blank: two choices (the first stores blank),
+     and a box only while the second is chosen. The box carries no placeholder:
+     a placeholder is "what to type" (STYLE-GUIDE §10) and the field's
+     description, drawn under it, is its purpose — one text, once. -->
+{#snippet unsetChoice(
+	id: string,
+	key: string,
+	decl: FieldDecl,
+	value: unknown,
+	set: (v: unknown) => void
+)}
+	{@const mode =
+		String(value ?? "") !== "" || pickedOther.has(id) ? "other" : "unset"}
+	<Select
+		label={text(decl.label, key)}
+		labelHidden
+		class="w-full"
+		value={mode}
+		options={[
+			{ value: "unset", label: text(decl.unset?.label, "") },
+			{ value: "other", label: text(decl.unset?.other, "") }
+		]}
+		onValueChange={(v) => {
+			if (v === "unset") {
+				pickedOther.delete(id)
+				set("")
+			} else pickedOther.add(id)
+		}}
+	/>
+	{#if mode === "other"}
+		<input
+			{id}
+			type="text"
+			class="input w-full"
+			aria-label={text(decl.unset?.other, "")}
+			value={String(value ?? "")}
+			onchange={(e) => set(e.currentTarget.value.trim())}
+		/>
+	{/if}
+{/snippet}
+
 <!-- One control, for a top-level field or an object's member: `id` labels it,
      `value` is what it shows, `set` commits (`live` writes as it is typed). -->
 {#snippet control(
@@ -204,7 +320,7 @@
 	live: (v: unknown) => void
 )}
 	<div class="flex flex-col gap-1">
-		{#if decl.type === "enum"}
+		{#if decl.type === "enum" || namesUnset(decl)}
 			<span class="text-sm font-medium" aria-hidden="true">
 				{text(decl.label, key)}
 			</span>
@@ -222,6 +338,8 @@
 				oninput={(e) => live(e.currentTarget.value)}
 				onchange={(e) => set(e.currentTarget.value)}
 			></textarea>
+		{:else if decl.type === "json"}
+			{@render jsonCode(id, key, decl, value, set, live)}
 		{:else if decl.type === "boolean"}
 			<label class="flex items-center gap-2 text-sm">
 				<input
@@ -253,6 +371,8 @@
 				value={value == null ? "" : String(value)}
 				onchange={(e) => set(e.currentTarget.value)}
 			/>
+		{:else if namesUnset(decl)}
+			{@render unsetChoice(id, key, decl, value, set)}
 		{:else}
 			<input
 				{id}
@@ -323,7 +443,7 @@
 				</fieldset>
 			{:else if visible(decl)}
 				<div class="flex flex-col gap-1">
-					{#if decl.type === "enum" || isTicks(decl)}
+					{#if decl.type === "enum" || isTicks(decl) || namesUnset(decl)}
 						<!-- Select carries its own (visually hidden) label;
 						     this is the same visible text, kept for the
 						     column's rhythm. A ticked list's group says it. -->
@@ -348,6 +468,15 @@
 								(values[key] = e.currentTarget.value)}
 							onchange={() => oncommit?.()}
 						></textarea>
+					{:else if decl.type === "json"}
+						{@render jsonCode(
+							`sf-${key}`,
+							key,
+							decl,
+							shown(key),
+							(v) => commit(key, v),
+							(v) => (values[key] = v)
+						)}
 					{:else if decl.type === "boolean"}
 						<label class="flex items-center gap-2 text-sm">
 							<input
@@ -436,6 +565,14 @@
 							placeholder="••••••••"
 							onchange={(e) => commit(key, e.currentTarget.value)}
 						/>
+					{:else if namesUnset(decl)}
+						{@render unsetChoice(
+							`sf-${key}`,
+							key,
+							decl,
+							shown(key),
+							(v) => commit(key, v)
+						)}
 					{:else}
 						<input
 							id="sf-{key}"
@@ -456,7 +593,7 @@
 		{/each}
 	{/each}
 	{#each groups.filter((g) => g.group === ADVANCED_GROUP) as g (g.group)}
-		<details class="border-surface-200-800 rounded-container border p-3" data-testid="schema-form-advanced">
+		<details class="panel-edge rounded-container border p-3" data-testid="schema-form-advanced">
 			<summary class="text-surface-600-400 cursor-pointer text-xs font-semibold">Advanced</summary>
 			<div class="mt-3 flex flex-col gap-3">
 				{#each g.fields as { key, decl } (key)}

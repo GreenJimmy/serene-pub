@@ -4,7 +4,7 @@
 	import { v4 as uuid } from "uuid"
 	import { useTypedSocket } from "$lib/client/sockets/loadSockets.client"
 	import { useInterest } from "$lib/client/sockets/interest.svelte"
-	import { toaster } from "$lib/client/utils/toaster"
+	import { notify } from "$lib/client/utils/notify"
 	import { EditorState } from "@codemirror/state"
 	import {
 		EditorView,
@@ -163,7 +163,7 @@
 	function save() {
 		const content = editorView?.state.doc.toString() ?? ""
 		if (!labelField.trim() || !content.trim()) {
-			toaster.error({ title: "Label and CSS are required" })
+			notify.error({ title: "Label and CSS are required" })
 			return
 		}
 		isSaving = true
@@ -205,13 +205,17 @@
 
 	function onSave(msg: Sockets.CustomThemes.Save.Response) {
 		isSaving = false
-		toaster.success({ title: "Theme saved" })
+		notify.success({
+			source: "socket:customThemes:save",
+			title: "Theme saved"
+		})
 		onSaved?.(msg.theme)
 	}
 
 	function onSaveError(msg: Sockets.ErrorResponse) {
 		isSaving = false
-		toaster.error({
+		notify.error({
+			source: "socket:customThemes:save:error",
 			title: "Failed to save theme",
 			description: msg?.error
 		})
@@ -219,24 +223,32 @@
 
 	function onDelete() {
 		isDeleting = false
-		toaster.success({ title: "Theme deleted" })
+		notify.success({
+			source: "socket:customThemes:delete",
+			title: "Theme deleted"
+		})
 		if (theme?.id) onDeleted?.(theme.id)
 	}
 
 	function onDeleteError(msg: Sockets.ErrorResponse) {
 		isDeleting = false
-		toaster.error({
+		notify.error({
+			source: "socket:customThemes:delete:error",
 			title: "Failed to delete theme",
 			description: msg?.error
 		})
 	}
 
 	function onSetPubTheme() {
-		toaster.success({ title: "Pub theme setting updated" })
+		notify.success({
+			source: "socket:customThemes:setPubTheme",
+			title: "Pub theme setting updated"
+		})
 	}
 
 	function onSetPubThemeError(msg: Sockets.ErrorResponse) {
-		toaster.error({
+		notify.error({
+			source: "socket:customThemes:setPubTheme:error",
 			title: "Failed to update",
 			description: msg?.error
 		})
@@ -287,13 +299,9 @@
 <!-- The chrome is the app's own (panel-edge rules, surface grounds,
      muted text) so it follows the theme being edited; only the code area is
      CodeMirror's dark editor. -->
-<div
-	class="panel-edge bg-surface-50-950 flex h-full flex-col overflow-hidden rounded-xl border"
->
+<div class="bg-surface-100-900 flex h-full flex-col overflow-hidden rounded-xl">
 	<!-- Editor toolbar -->
-	<div
-		class="panel-edge bg-surface-100-900 flex items-center gap-2 border-b px-4 py-2"
-	>
+	<div class="flex items-center gap-2 px-4 py-2">
 		<div class="flex flex-1 items-center gap-3">
 			<!-- Dot accent -->
 			<span
@@ -321,7 +329,7 @@
 	</div>
 
 	<!-- Fields row -->
-	<div class="panel-edge bg-surface-100-900 border-b px-4 py-3">
+	<div class="px-4 py-3">
 		<label
 			for="theme-label-input"
 			class="text-surface-600-400 mb-1 block text-xs font-medium"
@@ -352,9 +360,7 @@
 	></div>
 
 	<!-- Status bar -->
-	<div
-		class="panel-edge bg-surface-100-900 flex items-center justify-between border-t px-4 py-1.5"
-	>
+	<div class="flex items-center justify-between px-4 py-1.5">
 		<div class="text-surface-600-400 flex items-center gap-4 text-xs">
 			<span>{lineCount} lines</span>
 			<span>{charCount.toLocaleString()} chars</span>
@@ -376,9 +382,7 @@
 						: "Enable for all users"}
 				>
 					<Icons.Globe size={11} />
-					{theme.isPubTheme
-						? "Pub theme"
-						: "Make pub theme"}
+					{theme.isPubTheme ? "Pub theme" : "Make pub theme"}
 				</button>
 			{/if}
 

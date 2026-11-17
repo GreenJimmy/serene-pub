@@ -9,7 +9,7 @@
 	 */
 	import { onMount } from "svelte"
 	import * as Icons from "@lucide/svelte"
-	import { toaster } from "$lib/client/utils/toaster"
+	import { notify } from "$lib/client/utils/notify"
 	import { useTypedSocket } from "$lib/client/sockets/loadSockets.client"
 	import {
 		requestWithInterest,
@@ -90,7 +90,7 @@
 	}
 	function handleError(res: Sockets.ErrorResponse) {
 		busy = false
-		toaster.error({ title: res.error })
+		notify.error({ source: "invites:refusal", title: res.error })
 	}
 
 	const ERRORS = [
@@ -145,7 +145,7 @@
 	async function copyLink() {
 		if (!link) return
 		await navigator.clipboard.writeText(link)
-		toaster.success({ title: "Invite link copied" })
+		notify.success({ title: "Invite link copied" })
 	}
 </script>
 
@@ -226,7 +226,7 @@
 		</button>
 	</div>
 
-	<div class="border-surface-200-800 space-y-2 border-t pt-3">
+	<div class="space-y-2">
 		<p class="text-surface-600-400 text-xs">
 			Locked out of an existing account? This replaces their password,
 			removes two-factor, and signs out their other sessions.
@@ -257,7 +257,7 @@
 	</div>
 
 	{#if showOutstanding}
-		<div class="border-surface-200-800 space-y-2 border-t pt-3">
+		<div class="space-y-2">
 			<p class="text-sm font-semibold">Outstanding</p>
 			{#if !active.length}
 				<p class="text-surface-600-400 text-xs">No active invites.</p>
@@ -265,7 +265,7 @@
 				<ul class="space-y-2">
 					{#each active as inv (inv.id)}
 						<li
-							class="border-surface-200-800 flex items-center justify-between gap-2 rounded-lg border px-2 py-1.5 text-xs"
+							class="panel-edge flex items-center justify-between gap-2 rounded-lg border px-2 py-1.5 text-xs"
 						>
 							<span class="min-w-0 truncate">
 								{inv.kind === "register"

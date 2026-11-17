@@ -99,6 +99,15 @@ export const CONNECTION_DEFAULTS = {
 			}
 		}
 	},
+	[CONNECTION_TYPE.AUDIOCPP_MANAGED]: {
+		type: CONNECTION_TYPE.AUDIOCPP_MANAGED,
+		// Display only: where audio.cpp actually is comes from its own
+		// settings (the port), never from this row.
+		baseUrl: "http://127.0.0.1:5002",
+		modality: "tts",
+		model: "",
+		extraJson: {}
+	},
 	[CONNECTION_TYPE.KOBOLDCPP_MANAGED_IMAGE]: {
 		type: CONNECTION_TYPE.KOBOLDCPP_MANAGED_IMAGE,
 		// Display only, and the same value the managed text type carries: this
@@ -137,10 +146,12 @@ export const CONNECTION_DEFAULTS = {
 	},
 	[CONNECTION_TYPE.A1111]: {
 		type: CONNECTION_TYPE.A1111,
-		// KoboldCPP's port, since that is the quickest of the four to get running
-		// and the app already manages it. An image connection, so no prompt-format
-		// or token-counter — those are text-only concerns.
-		baseUrl: "http://localhost:5001",
+		// The port A1111, Forge and SD.Next all listen on. It was KoboldCPP's
+		// :5001 until 2026-11-08, from before the managed KoboldCPP had an image
+		// type of its own; by then every A1111-dialect user's first Test was an
+		// instant "fetch failed". An image connection, so no prompt-format or
+		// token-counter — those are text-only concerns.
+		baseUrl: "http://localhost:7860",
 		modality: "image-gen",
 		extraJson: {
 			apiKey: ""
@@ -184,6 +195,22 @@ export const CONNECTION_DEFAULTS = {
 		extraJson: {
 			apiKey: ""
 		}
+	},
+	[CONNECTION_TYPE.ELEVENLABS]: {
+		type: CONNECTION_TYPE.ELEVENLABS,
+		baseUrl: "https://api.elevenlabs.io",
+		modality: "tts",
+		model: "eleven_flash_v2_5",
+		extraJson: {
+			apiKey: ""
+		}
+	},
+	[CONNECTION_TYPE.AUDIOCPP]: {
+		type: CONNECTION_TYPE.AUDIOCPP,
+		baseUrl: "http://127.0.0.1:8080",
+		modality: "tts",
+		model: "",
+		extraJson: {}
 	},
 
 	/**

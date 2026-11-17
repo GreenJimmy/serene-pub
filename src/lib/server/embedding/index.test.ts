@@ -2,6 +2,11 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 
 const isAndroidWrapperMock = vi.fn(() => false)
 
+// `onnxRuntime.ts` reads the leaf (`utils/androidWrapper.ts`), not the barrel (M2e).
+vi.mock("$lib/server/utils/androidWrapper", async () => {
+	const barrel = await import("$lib/server/utils")
+	return { isAndroidWrapper: () => barrel.isAndroidWrapper() }
+})
 vi.mock("$lib/server/utils", () => ({
 	getAppDataDir: () => "/tmp/fake-app-data",
 	isAndroidWrapper: () => isAndroidWrapperMock()
@@ -151,11 +156,18 @@ describe("loadEmbeddingModel's dtype", () => {
 	/** The options the one `pipeline()` call was handed. */
 	const loadedWith = () => (pipelineSpy.mock.lastCall as any)?.[2]
 
-	test("is the catalogue's for a catalogued model, whatever the registry says", async () => {
+	test("is the registry row's for a catalogued model downloaded at another precision", async () => {
 		registryRows.push({ quantization: "fp16" })
 		const mod = await freshImport()
 		await mod.loadEmbeddingModel("catalogued/model")
 		expect((pipelineSpy.mock.lastCall as any)?.[1]).toBe("catalogued/model")
+		expect(loadedWith()).toMatchObject({ dtype: "fp16" })
+		mod.unloadEmbeddingModel()
+	})
+
+	test("is the catalogue's for a catalogued model with no registry row", async () => {
+		const mod = await freshImport()
+		await mod.loadEmbeddingModel("catalogued/model")
 		expect(loadedWith()).toMatchObject({ dtype: "q8" })
 		mod.unloadEmbeddingModel()
 	})

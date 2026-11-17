@@ -35,7 +35,8 @@
  * has not been rebuilt yet.
  */
 
-import { eq } from "drizzle-orm"
+import { eq, inArray } from "drizzle-orm"
+import { resolveLibraryWrites } from "@serene-pub/sdk"
 import * as schema from "$lib/server/db/schema"
 import { sessionReadingOf } from "$lib/server/state/reading"
 import { ownBookOf } from "$lib/server/lorebooks/ownBook"
@@ -115,6 +116,31 @@ export async function loreWriteRefusal(
 }
 
 /**
+ * 🚧 Refusal sentence when this session's genre does not let a pipeline bench
+ * or bring back seats (`set-seat-bench@1`, owner 2026-11-10), else `null`.
+ * **Absent is OFF** (P1): only an explicit `writes.seats === true` allows it, so
+ * a session with no genre, a genre that cannot be read, an absent key and
+ * `false` all refuse. Same posture as `libraryWriteRefusal`.
+ */
+export async function seatWriteRefusal(
+	db: Db,
+	sessionId: number
+): Promise<string | null> {
+	let genre: { name: string; shape: unknown } | null = null
+	try {
+		genre = await sessionGenre(db, sessionId)
+	} catch {
+		genre = null
+	}
+	const shape = genre?.shape
+	const declared =
+		shape && typeof shape === "object" ? (shape as any).writes : null
+	if (genre && declared && typeof declared === "object" && declared.seats === true)
+		return null
+	return `This session's genre ('${genre?.name ?? "none"}') does not bench or bring back seats.`
+}
+
+/**
  * Refusal sentence when this session's genre opens no scenes, else `null`.
  * Same posture as `loreWriteRefusal`.
  */
@@ -130,6 +156,76 @@ export async function sceneWriteRefusal(
 	} catch {
 		return null
 	}
+}
+
+/**
+ * 🚧 (M2c) What a library write needs of the genre (`writes.library`), and the
+ * sentence's tail when it is not declared. **Absent is OFF** — unlike lore and
+ * scenes, a library write is something a genre opts into — so a session with
+ * no genre, or a genre that cannot be read, refuses too.
+ */
+const LIBRARY_NEEDS = {
+	characters: "does not make or change characters.",
+	lorebooks: "does not make lorebooks.",
+	/** ⏳ removed in S5, ★f-sdk-4. */
+	sessions: "does not read lorebooks into other sessions."
+} as const
+export type LibraryNeed = keyof typeof LIBRARY_NEEDS
+
+export async function libraryWriteRefusal(
+	db: Db,
+	sessionId: number,
+	need: LibraryNeed
+): Promise<string | null> {
+	let genre: { name: string; shape: unknown } | null = null
+	try {
+		genre = await sessionGenre(db, sessionId)
+	} catch {
+		genre = null
+	}
+	const policy = resolveLibraryWrites(genre?.shape)
+	const allowed =
+		need === "characters"
+			? policy.characters
+			: need === "sessions"
+				? policy.sessions
+				: policy.lorebooks
+	if (genre && allowed) return null
+	return `This session's genre ('${genre?.name ?? "none"}') ${LIBRARY_NEEDS[need]}`
+}
+
+/** 🚧 (M2c, ruling b1') What a plugin's pipeline or a plugin's genre hears from a library outlet. */
+export const PLUGIN_LIBRARY_REFUSAL = "A plugin's pipeline cannot write to your library yet."
+
+const ownerOfId = (id: string | null | undefined): string | null => {
+	if (!id) return null
+	const at = id.indexOf(":")
+	return at > 0 ? id.slice(0, at) : null
+}
+
+/**
+ * 🚧 (M2c, ruling b1': plugins reach the library outlets in a later stage) The refusal when the run is not core's —
+ * the running spec is a plugin's (`ownerPluginId`, the HOST scope's — never what the document says of itself) or the
+ * session's genre's owner is an installed plugin — else `null`. Asked before `libraryWriteRefusal`: a plugin genre that declares `writes.library`
+ * (the packager refuses that too, E_PLUGIN_LIBRARY_WRITES) still writes nothing.
+ */
+export async function pluginLibraryRefusal(db: Db, sessionId: number, ownerPluginId: string | undefined): Promise<string | null> {
+	if (ownerPluginId !== undefined) return PLUGIN_LIBRARY_REFUSAL
+	const owners = new Set<string>()
+	const [session] = await db
+		.select({ genreId: schema.sessions.genreId })
+		.from(schema.sessions)
+		.where(eq(schema.sessions.id, sessionId))
+		.limit(1)
+	const genre = ownerOfId(session?.genreId)
+	if (genre && genre !== "core") owners.add(genre)
+	if (!owners.size) return null
+	const plugin = await db
+		.select({ id: schema.plugins.pluginId })
+		.from(schema.plugins)
+		.where(inArray(schema.plugins.pluginId, [...owners]))
+		.limit(1)
+	return plugin.length ? PLUGIN_LIBRARY_REFUSAL : null
 }
 
 /** A session write refused, as a sentence a person can read. */
@@ -176,6 +272,9 @@ export interface SessionLoreWrite {
  * The row lands where the session reads: on its line — never main for a
  * branch session, which would leak the branch's story onto every line — and,
  * when it is dated, at the session's story now (`historyDateOfSessionWrite`).
+ * `sessionLoreWrite` reads the line as it stands and forks nothing; its caller
+ * (`entries:create`) forks a riding branch session's own line inside its
+ * transaction, after every check, so a refused write forks nothing.
  */
 export async function sessionLoreWrite(
 	db: Db,

@@ -35,7 +35,7 @@
 	 * the reason under it — the files are real, and the star is refused with
 	 * that sentence too.
 	 */
-	import { getContext } from "svelte"
+	import { getContext, tick } from "svelte"
 	import * as Icons from "@lucide/svelte"
 	import { Switch } from "@skeletonlabs/skeleton-svelte"
 	import PanelNavHeader from "$lib/client/components/panels/PanelNavHeader.svelte"
@@ -44,6 +44,8 @@
 	import { CONNECTION_TYPE } from "$lib/shared/constants/ConnectionTypes"
 	import { sectionForModality } from "$lib/shared/constants/connectionSections"
 	import { timeAgo } from "$lib/client/utils/timeAgo"
+	import QuantPicker from "./QuantPicker.svelte"
+	import { defaultQuant, quantChoice, quantsFromOnnx } from "./finder"
 	import { idleMinutes } from "./endpointStatus"
 	import { formatProgress } from "./modelManagement"
 	import {
@@ -175,11 +177,29 @@
 		busy = false
 	})
 
-	function download() {
+	/**
+	 * The precisions the list publishes for this entry. More than one opens
+	 * the quant picker on the entry's default; exactly one is sent as it
+	 * stands; the press ALWAYS carries a `dtype` when the list named one.
+	 */
+	const precisions = $derived(quantsFromOnnx(local?.catalog))
+	let choosing = $state(false)
+	/** The button that opened the picker; Cancel returns focus to it. */
+	let opener: HTMLElement | null = null
+	function download(from: HTMLElement) {
+		if (quantChoice(precisions) === "picker") {
+			opener = from
+			choosing = true
+			return
+		}
+		sendDownload(defaultQuant(precisions)?.dtype)
+	}
+	function sendDownload(dtype?: string) {
 		busy = true
 		socket.emit("connections:downloadModel", {
 			id: connection.id!,
-			modelId: model.id
+			modelId: model.id,
+			...(dtype ? { dtype } : {})
 		})
 	}
 	function cancelDownload() {
@@ -340,7 +360,7 @@
 		<!-- 1. STATUS. What this model is right now, and the one thing to do
 		     about it. -->
 		<div
-			class="card preset-filled-surface-100-900 flex flex-col gap-3 p-3 {isActive
+			class="card preset-filled-surface-100-900 flex flex-col gap-3 p-3 [&_[data-quant-picker]]:bg-surface-50-950 {isActive
 				? 'ring-primary-500/70 ring-2'
 				: ''}"
 		>
@@ -354,11 +374,13 @@
 				<span class="text-sm font-semibold">{headline.text}</span>
 				{#if isActive && section}
 					<span
-						class="preset-tonal-primary inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-meta font-medium"
+						class="preset-tonal-primary text-meta inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium"
 						title={`In the ${isEmbeddings ? "Embeddings" : "Entities"} loadout`}
 					>
 						<Icons.Star size={9} aria-hidden="true" />
-						{isEmbeddings ? "Embeddings loadout" : "Entities loadout"}
+						{isEmbeddings
+							? "Embeddings loadout"
+							: "Entities loadout"}
 					</span>
 				{/if}
 			</div>
@@ -436,7 +458,7 @@
 							type="button"
 							class="{action} preset-filled-primary-500"
 							disabled={busy}
-							onclick={download}
+							onclick={(e) => download(e.currentTarget)}
 						>
 							<Icons.RefreshCw size={14} aria-hidden="true" />
 							Retry
@@ -450,7 +472,7 @@
 							type="button"
 							class="{action} preset-filled-primary-500"
 							disabled={busy}
-							onclick={download}
+							onclick={(e) => download(e.currentTarget)}
 						>
 							<Icons.Download size={14} aria-hidden="true" />
 							Download
@@ -573,7 +595,7 @@
 							type="button"
 							class="{action} preset-filled-primary-500"
 							disabled={busy}
-							onclick={download}
+							onclick={(e) => download(e.currentTarget)}
 						>
 							<Icons.RefreshCw size={14} aria-hidden="true" />
 							Retry
@@ -587,13 +609,29 @@
 							type="button"
 							class="{action} preset-filled-primary-500"
 							disabled={busy}
-							onclick={download}
+							onclick={(e) => download(e.currentTarget)}
 						>
 							<Icons.Download size={14} aria-hidden="true" />
 							Download
 						</button>
 					{/if}
 				{/if}
+			{/if}
+			{#if choosing}
+				<QuantPicker
+					repo={model.name}
+					quants={precisions}
+					tier="unsure"
+					noun="precision"
+					onCancel={() => {
+						choosing = false
+						void tick().then(() => opener?.focus())
+					}}
+					onDownload={(quant) => {
+						choosing = false
+						sendDownload(quant.dtype)
+					}}
+				/>
 			{/if}
 		</div>
 

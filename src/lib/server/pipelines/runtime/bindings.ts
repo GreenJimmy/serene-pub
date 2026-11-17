@@ -18,6 +18,15 @@
  */
 
 import { isCardlessPlayerSeat } from "$lib/server/sessions/seatName"
+import { inPlay } from "$lib/shared/sessions/inPlay"
+import {
+	cardFormRefInCast,
+	hostSeatRefOf,
+	storedSeatRefInCast,
+	type SeatRefCast
+} from "$lib/server/pipelines/prompt/seatCards"
+import { memberFormOn } from "$lib/server/state/memberForm"
+import { seatOf } from "$lib/server/sessions/seats"
 import { dutyModes } from "$lib/server/pipelines/runtime/duties"
 import type { Bindings, TypedReads } from "@serene-pub/sdk"
 import {
@@ -51,7 +60,8 @@ import {
 	type FormBlock,
 	type MessageBlock,
 	type ParticipantRef,
-	type StatusText
+	type StatusText,
+	readLibraryDraft
 } from "@serene-pub/sdk"
 
 /**
@@ -142,6 +152,7 @@ import {
 // The relationship mechanism (ruling 2026-09-10, Q1), in its own module — see
 // the header there for why it is not written inline.
 import { relationshipSearchBindings } from "./bindings.relationships"
+import { pluginStorageBindings } from "./bindings.pluginStorage"
 // Stats and states, in their own module for the same reason — see its header
 // for why the write does not go through a host seam.
 import { stateBindings } from "./bindings.state"
@@ -149,12 +160,15 @@ import { cutOutBindings } from "./cutOut"
 import { spriteFillBindings } from "./spriteFill"
 import { portraitBindings } from "./portrait"
 import { illustrateSceneBindings } from "./illustrateScene"
+import { messageLineBindings } from "$lib/server/pipelines/speech/messageLine"
 import { clockStepBindings } from "./clockStep"
+import { roundWorthBindings } from "./roundWorth"
+import { sceneBoundariesBindings } from "./sceneBoundaries"
 import { describeImageBindings } from "./describeImage"
 // Is a room name already described (lair pass R7) — its own module, same reason.
 import { undescribedNameBindings } from "./undescribedName"
 import { buildScanWindow } from "$lib/server/pipelines/ranking/signals"
-import { bindingNames } from "$lib/server/pipelines/ranking/entities"
+import { bindingNames, type EntityRef } from "$lib/server/pipelines/ranking/entities"
 import {
 	proposeKeys,
 	MAX_KEYS,
@@ -216,6 +230,8 @@ import {
 import { stableExamplePick } from "$lib/server/pipelines/prompt/promptFields"
 import {
 	MESSAGE_SCAFFOLD_TOKENS,
+	earlierBlockTokens,
+	earlierScenesShown,
 	historyReadTokens,
 	holdCut,
 	isCuttableLine,
@@ -253,6 +269,8 @@ import { resolveBatchBudget } from "$lib/server/utils/summarizer/batchBudget"
 import { promptFormatOf } from "$lib/shared/constants/PromptFormats"
 import { explicitStopsFrom } from "$lib/server/connections/stops"
 import { streamingModeFrom } from "$lib/server/connections/streaming"
+import { cueLines as cueLinesOf } from "$lib/server/pipelines/speech/cueLines"
+import { ComposedError } from "$lib/server/connections/visibility"
 import { contextBudgetFrom } from "$lib/server/pipelines/runtime/contextWindow"
 import {
 	docsExcerptContent,
@@ -267,6 +285,8 @@ import {
 	unpromptedEntries,
 	rotationTurns,
 	senderRefOf,
+	seatRefLookupOfCast,
+	type SeatRefOfMember,
 	roundRobinEntries,
 	spokenRefsSince,
 	standingTurnPlan,
@@ -670,6 +690,10 @@ interface SessionCastRead {
 		removedAt?: Date | string | null
 		/** False for a seat switched off in the cast list; the read carries every seat. */
 		enabled?: boolean | null
+		/** 🚧 Host-filled identity (seat-cast S3/S4): the seat's participant ref, cast member and seat id. */
+		ref?: string | null
+		castMemberId?: number | null
+		seatId?: number | null
 	} | null> | null
 	/** The characters this session's users voice — character rows. */
 	sessionPersonas?: Array<{
@@ -682,10 +706,18 @@ interface SessionCastRead {
 		absorbedAliases?: unknown
 		/** A departed presence, when the read carries the seat's row. */
 		removedAt?: Date | string | null
+		/** 🚧 Host-filled identity (seat-cast S3/S4): the seat's participant ref, cast member and seat id. */
+		ref?: string | null
+		castMemberId?: number | null
+		seatId?: number | null
 	} | null> | null
 	/** The book's whole roster — see `castEntityRefs`. */
 	lorebookBindings?: Array<{
+		/** `lorebook_bindings.id` — the cast member's id, the key of a member with no live card. */
+		id?: number | null
 		characterId?: number | null
+		/** The linked card is soft-deleted (`characters.is_deleted`); null or absent without a card. */
+		cardDeleted?: boolean | null
 		name?: string | null
 		aliases?: unknown
 		absorbedAliases?: unknown
@@ -724,11 +756,9 @@ interface SessionCastRead {
  * cast rather than replacing it: every name the cast used to claim, it still
  * claims first.
  *
- * A binding bound to neither a character nor a persona — a background NPC the
- * graph minted — contributes nothing, exactly as it contributes nothing to
- * `loadVocabulary`: `EntityRef` names a character or an entry, and
- * there is no row for a third kind to resolve *to*. Its name still reaches the
- * open tier as a string.
+ * A binding with no live card — a background NPC the graph minted, or a member
+ * whose card was soft-deleted — is a `cast_member:<binding id>` ref, exactly as
+ * `loadVocabulary` keys it (★s4-ner-2), after the carded members.
  *
  * ⚠ **What this does not do is read the clause a name sits in.** Tier one
  * resolves *"the warden was already there"* and *"the warden was four days up
@@ -749,13 +779,13 @@ export function castEntityRefs(
 	cast: SessionCastRead | null | undefined
 ): Array<{
 	name: string
-	ref: { kind: "character" | "entry"; id: number }
+	ref: EntityRef
 }> {
 	const out: Array<{
 		name: string
-		ref: { kind: "character"; id: number }
+		ref: EntityRef
 	}> = []
-	const add = (name: unknown, ref: { kind: "character"; id: number }) => {
+	const add = (name: unknown, ref: EntityRef) => {
 		const trimmed = typeof name === "string" ? name.trim() : ""
 		if (trimmed && Number.isFinite(ref.id)) out.push({ name: trimmed, ref })
 	}
@@ -784,14 +814,25 @@ export function castEntityRefs(
 	// The rest of the book, after the room. `bindingNames` is the shared
 	// spelling of the `name` ∪ `aliases` ∪ `absorbedAliases` union the schema
 	// note makes mandatory — the same one `loadVocabulary` calls.
-	for (const b of cast?.lorebookBindings ?? []) {
-		const ref =
-			b?.characterId != null
-				? { kind: "character" as const, id: b.characterId }
+	// 🚧 (★s4-ner-2) A member with a live card is that card (`character`); one
+	// with no live card — card-less, or its card soft-deleted — is itself
+	// (`cast_member:<binding id>`), as `loadVocabulary` keys it. Carded members
+	// go in first and card-less ones next, so a card-less member never takes a
+	// name a carded one holds.
+	const roster = (cast?.lorebookBindings ?? []).flatMap((b) => {
+		if (!b) return []
+		const live = b.characterId != null && b.cardDeleted !== true
+		const ref: EntityRef | null = live
+			? { kind: "character", id: b.characterId as number }
+			: b.id != null
+				? { kind: "cast_member", id: b.id }
 				: null
-		if (!ref) continue
-		for (const name of bindingNames(b)) add(name, ref)
-	}
+		return ref ? [{ b, ref, live }] : []
+	})
+	for (const live of [true, false])
+		for (const m of roster)
+			if (m.live === live)
+				for (const name of bindingNames(m.b)) add(name, m.ref)
 	return out
 }
 
@@ -1032,6 +1073,9 @@ async function loreFor(
 		ctx.read("lorebook_entries", {
 			sessionId: input?.scope?.sessionId,
 			currentCharacterId: input?.scope?.currentCharacterId ?? null,
+			...(input?.scope?.currentCastMemberId != null
+				? { currentCastMemberId: input.scope.currentCastMemberId }
+				: {}),
 			// Omitted rather than passed as `undefined`, so a lane that wires no
 			// speaker hands the host the same query object it always did.
 			...(speaker === undefined ? {} : { speaker })
@@ -1511,30 +1555,71 @@ function resolveAddresseeName(
 	cast: SessionCastRead | null | undefined
 ): ParticipantRef | null {
 	if (typeof named !== "string" || !named.trim()) return null
-	const text = named.trim()
+	// 🚧 (seat-cast S2/S4) a seat reference is read as the form the session
+	// stores (`storedSeatRefInCast`: the card form off, the member form —
+	// `seated-member:` / `player-seat:` — once `state/memberForm.ts` is on),
+	// which then passes the seated check below; nobody here seated as that
+	// member → nobody.
+	const text = storedSeatRefInCast(cast, named.trim())
+	if (text === null) return null
 	// Live seats only, on both sides: a departed participant — a cast
 	// member or a presence with `removedAt` — is nobody's, and a block put
 	// to one would be owner-only (the resolver says nobody portrays them)
 	// where one put to nobody in particular is open to the action's
 	// audience. The same `removedAt` test the turn strategies apply.
+	// A seat counts with a card OR a member: a card-less character seat has
+	// `castMemberId` and a card-shaped `character` with no `id`.
 	const seated = (cast?.sessionCharacters ?? []).filter(
-		(cc) => cc?.character?.id && cc.removedAt == null
+		(cc) =>
+			cc &&
+			(cc.character?.id != null || cc.castMemberId != null) &&
+			cc.removedAt == null
 	)
 	const presences = (cast?.sessionPersonas ?? []).filter(
 		(cp) => cp?.persona?.id && cp.removedAt == null
 	)
 	const seatedCharacters = new Set<number>()
-	for (const cc of seated) seatedCharacters.add(cc!.character!.id!)
+	for (const cc of seated)
+		if (cc!.character?.id != null) seatedCharacters.add(cc!.character.id)
 	for (const cp of presences) seatedCharacters.add(cp!.persona!.id!)
 	const envoys = ((cast as { envoys?: unknown } | null)?.envoys ?? []) as Array<{
 		slug?: string
 		name?: unknown
 	}>
+	/** ⏳ A live seat's own ref: the row's host-filled one, else `hostSeatRefOf`. */
+	const seatRefOf = (
+		kind: "character" | "player",
+		row: { ref?: string | null; castMemberId?: number | null; seatId?: number | null },
+		cardId: number | null
+	): string | null =>
+		(typeof row.ref === "string" && row.ref ? row.ref : null) ??
+		(kind === "player" && row.seatId == null ? null : hostSeatRefOf({
+			kind,
+			seatId: row.seatId ?? 0,
+			castMemberId: row.castMemberId ?? null,
+			cardId
+		}))
 	if (isParticipantRef(text)) {
 		const ref = parseParticipantRef(text)
 		if (ref.kind === "character") {
 			const id = participantRowId(ref.id)
 			return id !== null && seatedCharacters.has(id) ? text : null
+		}
+		// ⏳ Member form (flip on): a `seated-member:` / `player-seat:` is believed only when a live seat here carries it.
+		if (
+			memberFormOn() &&
+			(ref.kind === "seated-member" || ref.kind === "player-seat")
+		) {
+			const here = new Set<string>()
+			for (const cc of seated) {
+				const r = seatRefOf("character", cc!, cc!.character?.id ?? null)
+				if (r) here.add(r)
+			}
+			for (const cp of presences) {
+				const r = seatRefOf("player", cp!, cp!.persona!.id!)
+				if (r) here.add(r)
+			}
+			return here.has(text) ? text : null
 		}
 		if (ref.kind === "envoy")
 			return envoys.some((e) => e?.slug === ref.slug) ? text : null
@@ -1550,12 +1635,18 @@ function resolveAddresseeName(
 	// The cast first: a name both a cast member and a presence bear goes
 	// to the cast.
 	for (const cc of seated) {
-		const c = cc!.character!
-		if (bearsName(c)) return `character:${c.id}`
+		const c = cc!.character
+		if (c && bearsName(c)) {
+			// A card-less seat has no card id: its ref is the host's, never `character:undefined`.
+			const ref = seatRefOf("character", cc!, c.id ?? null)
+			if (ref) return ref as ParticipantRef
+			if (c.id != null) return `character:${c.id}` as ParticipantRef
+		}
 	}
 	for (const cp of presences) {
 		const c = cp!.persona!
-		if (bearsName(c)) return `character:${c.id}`
+		if (bearsName(c))
+			return (seatRefOf("player", cp!, c.id!) ?? `character:${c.id}`) as ParticipantRef
 	}
 	for (const e of envoys) {
 		if (!e?.slug) continue
@@ -1567,6 +1658,33 @@ function resolveAddresseeName(
 			return `envoy:${e.slug}`
 	}
 	return null
+}
+
+/**
+ * ⏳ The cast lookup the turn-order rules take, built from the candidates the
+ * pool admitted (the strategies hold no cast port): a candidate carries its
+ * seat's `castMemberId` once `state/memberForm.ts` is on, so a row's cast
+ * member answers the candidate's ref — a person's line the `persona`
+ * candidate (`'player-seat'`), a reply the `character` one (`'character-seat'`),
+ * no hint character before persona. Undefined while no candidate carries one
+ * (the flip off): the rules then read the card form, as they always did.
+ */
+function seatRefLookupOfCandidates(
+	candidates: readonly TurnCandidate[]
+): SeatRefOfMember | undefined {
+	const seats = candidates.filter(
+		(c) =>
+			typeof c.castMemberId === "number" &&
+			(c.kind === "character" || c.kind === "persona")
+	)
+	if (!seats.length) return undefined
+	return (castMemberId, seatKind) => {
+		const mine = seats.filter((c) => c.castMemberId === castMemberId)
+		const first = (kind: string) => mine.find((c) => c.kind === kind)
+		const wanted = seatKind === "player-seat" ? "persona" : "character"
+		const other = wanted === "persona" ? "character" : "persona"
+		return (first(wanted) ?? first(other))?.ref
+	}
 }
 
 /**
@@ -1612,6 +1730,8 @@ function turnEntries(strategy: TurnStrategyName) {
 			const candidates = (input?.candidates ?? []) as TurnCandidate[]
 			const messages = (input?.messages ?? []) as RotationMessage[]
 			const done = (order: TurnEntry[]) => ok({ main: order, order })
+			// ⏳ The cast lookup, from the candidates (member form once on).
+			const refOfMember = seatRefLookupOfCandidates(candidates)
 
 			// Manual prepares nothing: every turn here is a press (§4.4).
 			if (strategy === "manual") return done([])
@@ -1627,14 +1747,14 @@ function turnEntries(strategy: TurnStrategyName) {
 			if (strategy === "narrator") return done(narratorEntries(messages))
 
 			if (strategy === "round-robin")
-				return done(roundRobinEntries(candidates, messages))
+				return done(roundRobinEntries(candidates, messages, refOfMember))
 			if (strategy === "user-split")
-				return done(userSplitEntries(candidates, messages))
+				return done(userSplitEntries(candidates, messages, refOfMember))
 			if (strategy === "random") {
 				// One seeded draw over the not-yet-spoken candidates. The seed
 				// is the run's, so a replay re-rolls identically and an
 				// unrelated recompute may not — documented, not prevented.
-				const due = roundRobinEntries(candidates, messages)
+				const due = roundRobinEntries(candidates, messages, refOfMember)
 				if (!due.length) return done([])
 				const random: () => number = ctx?.random ?? (() => 0)
 				return done([due[Math.floor(random() * due.length)]!])
@@ -1648,7 +1768,7 @@ function turnEntries(strategy: TurnStrategyName) {
 			 * invent a participant. Entries the chain changed carry
 			 * `via: 'script'`.
 			 */
-			const selection = turnOrderSelection(candidates, messages)
+			const selection = turnOrderSelection(candidates, messages, refOfMember)
 			const out = (await ctx?.scripts?.apply("select", selection)) ?? selection
 			const returned =
 				out && typeof out === "object"
@@ -2069,6 +2189,17 @@ export function selectJsonPaths(
 	// single value to publish, and a reader of `value` on a multi-path node is
 	// asking the same question `items` answers.
 	return { value: items, items }
+}
+
+/**
+ * 🚧 A commit that refused in words (`{ halt: '…' }` from the host — a library write under the person's Off mode,
+ * a conversion nobody may make) halts the run with that sentence; anything else is the commit's ids, as before.
+ * The convention the seat and composer outlets spell out by hand (M2c path B: the library outlets' Off sentence
+ * reached no one because the binding wrapped it as ids).
+ */
+const committedOrHalt = (r: unknown) => {
+	const { halt: halted, ...ids } = (r ?? {}) as Record<string, unknown> & { halt?: unknown }
+	return typeof halted === "string" ? halt(halted) : ok(ids)
 }
 
 /**
@@ -2500,7 +2631,16 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 				})) as RotationMessage[]
 				const before =
 					typeof input?.messageId === "number" ? input.messageId : undefined
-				const standing = standingTurnPlan(rows ?? [], before)
+				// ⏳ A person's line is read as the seat the cast names (member
+				// form once `state/memberForm.ts` is on); the cast is read only then.
+				const refOfMember = memberFormOn()
+					? seatRefLookupOfCast(
+							(await ctx.read("session_cast", {
+								sessionId: input?.scope?.sessionId
+							})) as CastRead | null
+						)
+					: undefined
+				const standing = standingTurnPlan(rows ?? [], before, refOfMember)
 				const stored = (standing?.row.turnPlan ?? null) as {
 					plan?: unknown
 					locationPassage?: unknown
@@ -2559,6 +2699,9 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 					sessionId: input?.scope?.sessionId,
 					currentCharacterId:
 						input?.scope?.currentCharacterId ?? null,
+					...(input?.scope?.currentCastMemberId != null
+						? { currentCastMemberId: input.scope.currentCastMemberId }
+						: {}),
 					entryTypes: input?.params?.entryTypes ?? [],
 					name: input?.params?.name ?? "",
 					/**
@@ -2657,6 +2800,9 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 						sessionId: input?.scope?.sessionId,
 						currentCharacterId:
 							input?.scope?.currentCharacterId ?? null,
+						...(input?.scope?.currentCastMemberId != null
+							? { currentCastMemberId: input.scope.currentCastMemberId }
+							: {}),
 						// The per-speaker subject (W1), on `loreFor`'s terms: this
 						// node produces the character-lore band through the same
 						// gated read, so it takes the same port.
@@ -2918,6 +3064,9 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 						sessionId: input?.scope?.sessionId,
 						currentCharacterId:
 							input?.scope?.currentCharacterId ?? null,
+						...(input?.scope?.currentCastMemberId != null
+							? { currentCastMemberId: input.scope.currentCastMemberId }
+							: {}),
 						// The per-speaker subject (C3), on `character-lore`'s
 						// terms: the lore read is this mechanism's visibility
 						// gate, so naming the voice here is what keeps a search
@@ -3312,6 +3461,9 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 						sessionId: input?.scope?.sessionId,
 						currentCharacterId:
 							input?.scope?.currentCharacterId ?? null,
+						...(input?.scope?.currentCastMemberId != null
+							? { currentCastMemberId: input.scope.currentCastMemberId }
+							: {}),
 						// The per-speaker subject (C3), as `vector-search`'s.
 						...(input?.speaker === undefined
 							? {}
@@ -3797,6 +3949,9 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 									sessionId: input?.scope?.sessionId,
 									currentCharacterId:
 										input?.scope?.currentCharacterId ?? null,
+									...(input?.scope?.currentCastMemberId != null
+										? { currentCastMemberId: input.scope.currentCastMemberId }
+										: {}),
 									speaker: input.speaker
 								})) ?? []) as any[]
 							).map((e) => Number(e?.id))
@@ -3967,6 +4122,9 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 		// The same graph, ranked and budgeted rather than dumped.
 		...relationshipSearchBindings(),
 
+		// 🚧 One file of the running plugin's own storage (M2a).
+		...pluginStorageBindings(),
+
 		// The session's stats and states: one node reads them,
 		// one changes them.
 		...stateBindings(run),
@@ -3982,8 +4140,12 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 		...illustrateSceneBindings(),
 		// 🚧 Time passes… and the reply tick (live scenes §6).
 		...clockStepBindings(),
+		...roundWorthBindings(),
+		...sceneBoundariesBindings(),
 		// 🚧 Describe image — a picture read by the job that reads pictures (D1).
 		...describeImageBindings(),
+		// 🚧 One message as a line to speak — Read aloud / Say it as… (speech ★1).
+		...messageLineBindings(),
 
 		// Is a room name already described, by an entry or by recent prose.
 		...undescribedNameBindings(),
@@ -4145,7 +4307,13 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 					...castForPrompt,
 					// From the `scope` port alone: a flat `input.currentCharacterId`
 					// is a name this definition does not declare (R-12).
-					currentCharacterId: input?.scope?.currentCharacterId ?? null
+					currentCharacterId: input?.scope?.currentCharacterId ?? null,
+					// 🚧 A card-less seat's turn (S4): its member, from the scope
+					// too — a spec that wires no `speaker` into the context still
+					// names the speaker. Absent on every other turn.
+					...(input?.scope?.currentCastMemberId != null
+						? { currentCastMemberId: input.scope.currentCastMemberId }
+						: {})
 				}
 				return ok({
 					main: withSpeaker,
@@ -4188,8 +4356,12 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 					return halt(
 						`view is 'ai', 'template' or left out — '${String(view)}' is none of them`
 					)
+				// The owner the params name (`owner` + `sharedAnnex`), which the
+				// host resolves — passed through, as the lorebook annex's are.
+				const params = (input as { params?: unknown })?.params
 				const doc = await ctx.read("session_annex", {
 					sessionId: input?.scope?.sessionId,
+					params,
 					...(view === "ai"
 						? { view: "ai", speaker: (input as { speaker?: unknown })?.speaker ?? null }
 						: view === "template"
@@ -4201,9 +4373,45 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 						"there is no session to read an annex for — the run is scoped to a " +
 							"session that no longer exists"
 					)
-				return ok({ main: doc })
+				// 🚧 The owner's annex document version (M2a a8), for a
+				// `set-session-annex`'s `base`; the template view is many
+				// owners' and has none.
+				if (view === "template") return ok({ main: doc })
+				const version = await ctx.read("session_annex_version", {
+					sessionId: input?.scope?.sessionId,
+					params
+				})
+				return ok({ main: doc, ...(typeof version === "number" ? { version } : {}) })
 			},
 			{ ports: ["scope", "view", "speaker"], params: ["owner", "sharedAnnex"] }
+		),
+		/**
+		 * 🚧 One owner's document in the **lorebook annex** (M0, SHAPES
+		 * L9): the lorebook the session reads (its attached book overlaid by its
+		 * own), or the book a book-level run is scoped to. The owner resolves as
+		 * the session annex's does. No `view` — the query has none.
+		 */
+		"core:query/lorebook-annex@1": reads<typeof C.lorebookAnnex>(
+			async (input: NodeInput<typeof C.lorebookAnnex>, ctx: CoreQueryCtx) => {
+				const params = (input?.params ?? {}) as { owner?: unknown; sharedAnnex?: unknown }
+				const doc = await ctx.read("lorebook_annex", {
+					sessionId: input?.scope?.sessionId,
+					owner: params.owner,
+					sharedAnnex: params.sharedAnnex
+				})
+				if (doc === null)
+					return halt(
+						"there is no lorebook annex to read — the run is scoped to neither a session nor a lorebook"
+					)
+				// 🚧 (M2b) The owner's annex document version, for a `set-lorebook-annex`'s `base`.
+				const version = await ctx.read("lorebook_annex_version", {
+					sessionId: input?.scope?.sessionId,
+					owner: params.owner,
+					sharedAnnex: params.sharedAnnex
+				})
+				return ok({ main: doc, ...(typeof version === "number" ? { version } : {}) })
+			},
+			{ ports: ["scope"], params: ["owner", "sharedAnnex"] }
 		),
 		"core:query/session-settings@1": reads<typeof C.sessionSettings>(
 			async (
@@ -4234,8 +4442,9 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 		"core:task/turn-narrator@1": turnEntries("narrator"),
 		/**
 		 * The pool (§4.4): who may be seated at all, from the settings
-		 * document's cast. Two floors no param overrides — a removed row and
-		 * an `on-action` envoy are never candidates — and an output order of
+		 * document's cast. Floors no param overrides — a seat out of play
+		 * (removed or benched, `inPlay`) and an `on-action` envoy are never
+		 * candidates — and an output order of
 		 * characters, then personas, then envoys, each by position.
 		 */
 		"core:task/turn-pool@1": reads<typeof C.turnPool>(
@@ -4257,21 +4466,38 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 						.filter(
 							({ cc }) =>
 								cc.character &&
-								!cc.removedAt &&
-								// Filtered here, on `enabled`: the cast read
-								// carries switched-off seats too (2026-09-27).
-								(characters === "all" || cc.enabled === true)
+								// The bench is read by `inPlay`, the one rule (owner
+								// 2026-11-10): a removed or benched seat is never a
+								// candidate, whatever `characters` says.
+								inPlay(cc) &&
+								// A candidate needs a ref: the host's, else a card's;
+								// a seat with neither is nobody addressable.
+								(cc.ref || cc.character.id != null)
 						)
-						.sort((a, b) => a.position - b.position))
+						.sort((a, b) => a.position - b.position)) {
+						// ⚠ Owner: a seat's card owns it only when it HAS a card;
+						// a card-less seat is acted for by whoever seated it
+						// (`seatedByUserId`, ★S2b-1) — never a card's `userId`.
+						const ownerUserId =
+							cc.cc.character!.id != null
+								? cc.cc.character!.userId
+								: cc.cc.seatedByUserId
 						out.push({
-							ref: `character:${cc.cc.character!.id}`,
+							// ⏳ The row's host-filled ref (member form once
+							// `state/memberForm.ts` is on), else the card form.
+							ref: ((cc.cc.ref as ParticipantRef | null | undefined) ||
+								`character:${cc.cc.character!.id}`) as ParticipantRef,
 							kind: "character",
 							name: cc.cc.character!.name ?? "",
 							position: cc.position,
-							...(cc.cc.character!.userId != null
-								? { ownerUserId: cc.cc.character!.userId }
+							...(ownerUserId != null ? { ownerUserId } : {}),
+							// ⏳ Member form only: the seat's member, so the turn rules
+							// can read a transcript row's `castMemberId` as this seat.
+							...(memberFormOn() && cc.cc.castMemberId != null
+								? { castMemberId: cc.cc.castMemberId }
 								: {})
 						})
+					}
 
 				// Personas are candidates (R15): a person's entry is shown as
 				// their turn and never fired — that is how a session says it
@@ -4280,24 +4506,34 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 				if (personas !== "none") {
 					const turns = rotationTurns(messages)
 					let lastSender: ParticipantRef | null = null
+					// 🚧 The sender named by the cast in hand (seat-cast S3): a row
+					// with a `castMemberId` the cast answers is that seat's ref.
+					const refOfMember = seatRefLookupOfCast(cast)
 					for (let i = turns.length - 1; i >= 0; i--)
 						if (turns[i]!.role === "user") {
-							lastSender = senderRefOf(turns[i]!)
+							lastSender = senderRefOf(turns[i]!, refOfMember)
 							break
 						}
 					for (const { cp, position } of (cast.sessionPersonas ?? [])
 						.map((cp, index) => ({ cp, position: cp.position ?? index }))
 						// A seat with a card, or 🚧 a card-less one with a
-						// name; a departed card's leftover row is nobody.
-						.filter(({ cp }) => (cp.persona ? !cp.removedAt : isCardlessPlayerSeat(cp)))
+						// name; a departed card's leftover row is nobody, and a
+						// benched seat is never a candidate (`inPlay`).
+						.filter(
+							({ cp }) => inPlay(cp) && (cp.persona ? true : isCardlessPlayerSeat(cp))
+						)
 						.sort((a, b) => a.position - b.position)) {
 						// A participant is addressed by its card when it has
 						// one: a persona IS a character row (0132), so
 						// `character:<id>`; a card-less player seat is `player-seat:<id>`.
 						// `kind` is the role either way (PLAN §8 (8)).
-						const ref: ParticipantRef = cp.persona
-							? `character:${cp.persona.id}`
-							: `player-seat:${cp.seatId}`
+						// ⏳ The row's host-filled ref (`player-seat:<id>` once
+						// `state/memberForm.ts` is on), else the card form.
+						const ref: ParticipantRef =
+							(cp.ref as ParticipantRef | null | undefined) ||
+							(cp.persona
+								? `character:${cp.persona.id}`
+								: `player-seat:${cp.seatId}`)
 						if (personas === "others" && ref === lastSender) continue
 						const ownerUserId = cp.persona
 							? cp.persona.userId
@@ -4307,7 +4543,10 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 							kind: "persona",
 							name: cp.persona?.name ?? cp.seatName ?? "",
 							position,
-							...(ownerUserId != null ? { ownerUserId } : {})
+							...(ownerUserId != null ? { ownerUserId } : {}),
+							...(memberFormOn() && cp.castMemberId != null
+								? { castMemberId: cp.castMemberId }
+								: {})
 						})
 					}
 				}
@@ -4559,16 +4798,36 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 				ctx: CoreQueryCtx
 			) => {
 				const read = (await ctx.read("cast_presences", {
-					sessionId: input?.scope?.sessionId
-				})) as { rows?: unknown[]; at?: unknown } | null
+					sessionId: input?.scope?.sessionId,
+					atHour: (input as { atHour?: unknown })?.atHour
+				})) as { rows?: unknown[]; at?: unknown; placements?: unknown[] } | null
 				const rows = Array.isArray(read?.rows) ? read!.rows : []
 				return ok({
 					main: rows,
 					at: read?.at ?? null,
+					placements: Array.isArray(read?.placements) ? read!.placements : [],
 					diagnostics: { presences: rows.length }
 				})
 			},
-			{ ports: ["scope"] }
+			{ ports: ["scope", "atHour"] }
+		),
+
+		/**
+		 * 🚧 One cast member as the session reads it (plan §32 §10): the
+		 * member by seat ref or id, its card, follows and profile.
+		 */
+		"core:query/cast-member@1": reads<typeof C.castMember>(
+			async (
+				input: NodeInput<typeof C.castMember>,
+				ctx: CoreQueryCtx
+			) =>
+				ok({
+					main: await ctx.read("cast_member", {
+						sessionId: input?.scope?.sessionId,
+						member: input?.member
+					})
+				}),
+			{ ports: ["scope", "member"] }
 		),
 
 		/**
@@ -5133,6 +5392,43 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 		),
 
 		/**
+		 * 🚧 **Cue a line** (speech build, seam S3) — the line's text as the
+		 * speech cues it is spoken from. Pure and deterministic: `cueLines`
+		 * (`pipelines/speech/cueLines.ts`) is regex and locale tables, so the same
+		 * text, label and cast give the same cues. `inflection` takes a sprite
+		 * pick as it is; `cast` takes names, a cast document, or a settings
+		 * document carrying `.cast`.
+		 *
+		 * `speaker` is declared by the contract and used by `speak`, which names
+		 * whose voice a `speaker` cue takes; this task never needs it (a `Name:`
+		 * run is switched by `cast` alone), so it is listed in the read
+		 * declaration but not consulted.
+		 */
+		"core:task/cue-lines@1": reads<typeof C.cueLines>(
+			async (input: NodeInput<typeof C.cueLines>) => {
+				const cues = cueLinesOf({
+					text: typeof input?.text === "string" ? input.text : "",
+					inflection: input?.inflection,
+					cast: input?.cast,
+					quoteStyles: Array.isArray(input?.params?.quoteStyles)
+						? (input.params.quoteStyles as string[])
+						: null,
+					asterisks: input?.params?.asterisks,
+					voices: input?.params?.voices as never,
+					language:
+						typeof input?.params?.language === "string" && input.params.language.trim()
+							? input.params.language.trim()
+							: null
+				})
+				return ok({ main: cues, cues })
+			},
+			{
+				ports: ["text", "speaker", "inflection", "cast"],
+				params: ["quoteStyles", "asterisks", "voices", "language"]
+			}
+		),
+
+		/**
 		 * Build the object a context template renders against.
 		 *
 		 * Pure — and it took a failing end-to-end run to make it so. The first
@@ -5190,6 +5486,33 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 					input?.speaker,
 					(cast as { envoys?: unknown }).envoys
 				)
+				const currentCharacterId =
+					input?.currentCharacterId ?? cast.currentCharacterId ?? null
+				// 🚧 A card-less seat's speaker (S4): no card names it, so the seat
+				// is the cast row with no card whose host-filled `ref` is the
+				// `speaker` — matched, never parsed. Its member is the speaker.
+				// Unwired `speaker`: the cast's own `currentCastMemberId` (from the
+				// run's scope, `session-cast@1`).
+				const castSpeakerMember = (
+					cast as { currentCastMemberId?: number | null }
+				).currentCastMemberId
+				const currentCastMemberId: number | null =
+					currentCharacterId == null
+						? typeof input?.speaker === "string"
+							? ((
+									(cast.sessionCharacters ?? []) as Array<{
+										ref?: string | null
+										castMemberId?: number | null
+										character?: { id?: number | null } | null
+									}>
+								).find(
+									(cc) =>
+										cc?.ref === input.speaker &&
+										cc.character != null &&
+										cc.character.id == null
+								)?.castMemberId ?? null)
+							: (castSpeakerMember ?? null)
+						: null
 				const resolved = resolveContextInput({
 					...cast,
 					// The `prompts` slot, resolved through the scope chain by
@@ -5197,10 +5520,8 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 					// the field-selection rules take — the slot is where it came from,
 					// not what it is.
 					promptConfig: input?.prompts ?? {},
-					currentCharacterId:
-						input?.currentCharacterId ??
-						cast.currentCharacterId ??
-						null,
+					currentCharacterId,
+					currentCastMemberId,
 					// Inside the prompts slot, where `build-narrator-context@1`
 					// declares the field.
 					narratorName: input?.prompts?.narratorName,
@@ -5244,7 +5565,12 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 					 */
 					pickExample: stableExamplePick(
 						(cast as { sessionId?: unknown }).sessionId,
-						input?.currentCharacterId ?? cast.currentCharacterId ?? null,
+						// A card-less speaker keys by its member as a string
+						// (`seated-member:<id>`), which no numeric card id equals.
+						currentCharacterId ??
+							(currentCastMemberId != null
+								? `seated-member:${currentCastMemberId}`
+								: null),
 						random
 					)
 				})
@@ -5256,7 +5582,16 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 				const playerLabel = playerLabelOf(cast)
 				// ⚠ Within earshot (R1) — computed once, read by the rooms'
 				// location lookup and by the builder below.
-				const heard = withinEarshot(input?.state, input?.speaker)
+				// 🚧 A `seated-member:` speaker is read as its seat's card form
+				// (seat-cast S3), in both modes: `withinEarshot` reads a card id
+				// off the speaker (`holderOf`, `prompt/adventureContext.ts`), so
+				// ⏳ it stays card form until that reader takes member form.
+				const heard = withinEarshot(
+					input?.state,
+					typeof input?.speaker === "string"
+						? (cardFormRefInCast(cast as SeatRefCast, input.speaker) ?? input.speaker)
+						: input?.speaker
+				)
 				const coreVariables: Record<string, unknown> = {
 					...(playerLabel ? { playerLabel } : {}),
 					...(typeof input?.turnDirection === "string" &&
@@ -5745,12 +6080,73 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 				// system text (`midSystemFor`, projected by `world.ts`).
 				const midSystem = input?.connection?.metadata?.midSystem
 
+				/**
+				 * 🚧 *Earlier in the story*: the port's scenes, only a well-formed
+				 * `{ maxTokens, scenes }` (malformed entries dropped, a malformed
+				 * whole reads as no block). Which show is decided per render, from
+				 * the first line that render keeps (`earlierScenesShown`).
+				 */
+				const earlierPort = (() => {
+					const raw = (input as { earlierScenes?: unknown } | undefined)
+						?.earlierScenes as
+						| { maxTokens?: unknown; scenes?: unknown }
+						| null
+						| undefined
+					if (!raw || typeof raw !== "object" || !Array.isArray(raw.scenes))
+						return undefined
+					const maxTokens =
+						typeof raw.maxTokens === "number" && Number.isFinite(raw.maxTokens)
+							? raw.maxTokens
+							: null
+					if (raw.maxTokens !== null && maxTokens === null) return undefined
+					const scenes = (raw.scenes as unknown[]).flatMap((e) => {
+						const x = e as
+							| { name?: unknown; summary?: unknown; firstLineId?: unknown }
+							| null
+						return x &&
+							typeof x.name === "string" &&
+							typeof x.summary === "string" &&
+							typeof x.firstLineId === "number" &&
+							Number.isFinite(x.firstLineId)
+							? [{ name: x.name, summary: x.summary, firstLineId: x.firstLineId }]
+							: []
+					})
+					return scenes.length ? { maxTokens, scenes } : undefined
+				})()
+				const earlierCost = (e: { name: string; summary: string }) => {
+					const text = JSON.stringify({ name: e.name, summary: e.summary })
+					return typeof ctx?.countTokens === "function"
+						? ctx.countTokens(text)
+						: Math.ceil(text.length / 4)
+				}
+				const earlierCosts = earlierPort
+					? earlierPort.scenes.map((e) => ({
+							firstLineId: e.firstLineId,
+							tokens: earlierCost(e)
+						}))
+					: []
+				/** The scenes shown for a render of `lines`: older than its first cuttable line, within the share. */
+				const earlierShownFor = (lines: typeof messages) => {
+					if (!earlierPort) return []
+					const first = (lines as any[]).find(isCuttableLine)
+					return earlierScenesShown(
+						earlierPort.scenes,
+						first ? (first.id as number) : Infinity,
+						earlierPort.maxTokens,
+						earlierCost
+					)
+				}
+
 				const renderWith = (
 					lines: typeof messages,
 					placedReminder: typeof postHistory,
 					placedNote: typeof authorsNote
 				) =>
 					render({
+						earlierScenes: earlierShownFor(lines).map(({ name, summary }) => ({
+							name,
+							summary
+						})),
 						allocation,
 						postHistory: placedReminder,
 						authorsNote: placedNote,
@@ -5783,6 +6179,13 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 						...run
 					})
 				let rendered = await renderWith(messages, postHistory, authorsNote)
+				// The block counts only where the template places it. A custom
+				// template that leaves `earlierScenes` out, or a Prompt blocks
+				// list with it switched off, renders no block: the cut must not
+				// make room for one, and the receipt must not say it is there.
+				const earlierPlaced =
+					!!earlierPort &&
+					rendered.usedVariables.includes("earlierScenes")
 
 				/**
 				 * 🚧 Placed media in the budget (O10, `prompt/mediaBudget.ts`):
@@ -5849,6 +6252,8 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 				 * conversation look shorter must not switch the reminder off.
 				 */
 				let transcriptFit: Record<string, unknown> | undefined
+				// The lines the final render was handed, for the earlier-scenes note.
+				let finalLines = messages
 				const fitBudget = Number(input?.budget?.total ?? 0)
 				const count = (t: string) => ctx.countTokens(t)
 				// The executor always hands a counter; a binding called
@@ -5873,7 +6278,19 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 								placedMediaTokens([m])
 						),
 						total: measured,
-						budget: fitBudget
+						budget: fitBudget,
+						...(earlierPort && earlierPlaced
+							? {
+									earlier: {
+										scenes: earlierCosts,
+										maxTokens: earlierPort.maxTokens,
+										measured: earlierBlockTokens(
+											earlierShownFor(messages),
+											earlierCost
+										)
+									}
+								}
+							: {})
 					})
 					let from = 0
 					let held = false
@@ -5889,6 +6306,7 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 						const lines = (messages as any[]).filter(
 							(m) => !isCuttableLine(m) || keep.has(m)
 						) as typeof messages
+						finalLines = lines
 						let placedReminder = postHistory
 						if (postHistory?.hasContent)
 							placedReminder = (
@@ -5939,7 +6357,19 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 							),
 							total: size,
 							budget: fitBudget,
-							fresh: true
+							fresh: true,
+							...(earlierPort && earlierPlaced
+								? {
+										earlier: {
+											scenes: earlierCosts,
+											maxTokens: earlierPort.maxTokens,
+											measured: earlierBlockTokens(
+												earlierShownFor(lines),
+												earlierCost
+											)
+										}
+									}
+								: {})
 						})
 					}
 					if (from > 0) {
@@ -5963,6 +6393,42 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 									held
 								})
 							]
+						}
+					}
+				}
+
+				/**
+				 * 🚧 The receipt's note for *Earlier in the story* (P1: the cause,
+				 * and how to switch it off). Only when a scene lost a line from
+				 * the final render; the ordinary payload is untouched.
+				 */
+				if (earlierPort && earlierPlaced) {
+					const first = (finalLines as any[]).find(isCuttableLine)
+					const firstKept = first ? (first.id as number) : Infinity
+					const qualified = earlierPort.scenes.filter(
+						(e) => e.firstLineId < firstKept
+					)
+					if (qualified.length) {
+						const shown = earlierScenesShown(
+							earlierPort.scenes,
+							firstKept,
+							earlierPort.maxTokens,
+							earlierCost
+						)
+						const left = qualified.length - shown.length
+						const scenesOf = (n: number) => `${n} scene${n === 1 ? "" : "s"}`
+						const stop =
+							"Leave Earlier in the story out under Prompt blocks to stop it."
+						const note = shown.length
+							? `earlier scenes: the ${shown.length === 1 ? "summary" : "summaries"} of ${scenesOf(shown.length)} ${shown.length === 1 ? "is" : "are"} in the prompt (${shown.map((e) => e.name).join(", ")}), because some of their lines are no longer in it.` +
+								(left
+									? ` ${left} older ${left === 1 ? "one was" : "ones were"} left out to keep the block within its share of the window (${earlierPort.maxTokens} tokens).`
+									: "") +
+								` ${stop}`
+							: `earlier scenes: ${scenesOf(qualified.length)} lost lines from the prompt, but none of their summaries fit the block's share of the window (${earlierPort.maxTokens} tokens). ${stop}`
+						rendered = {
+							...rendered,
+							notes: [...(rendered.notes ?? []), note]
 						}
 					}
 				}
@@ -6048,7 +6514,8 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 					"decisions",
 					"messages",
 					"groups",
-					"annex"
+					"annex",
+					"earlierScenes"
 				],
 				// `truncation` left this schema (R-12): assemble drops nothing —
 				// what fits is the ranker's `select`, per band.
@@ -6334,6 +6801,95 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 					"workflow"
 				],
 				params: ["streaming", "orientation", "cutOut", "references", "seed"]
+			}
+		),
+
+		/**
+		 * 🚧 **Speak** (speech build, seam S3) — the line's cues in, one audio file
+		 * out. The host does the work (`dispatchSpeech`): it groups the cues by
+		 * voice and inflection, renders each group through the line template,
+		 * resolves the voice, calls the Narration loadout's model once per group,
+		 * joins the audio and stores it (spoken, owned by the session's owner).
+		 *
+		 * ⚠ **Any failure is "nothing spoken", never an error.** The step runs after
+		 * the reply is saved, and a voice that could not be made must not turn a
+		 * delivered reply into a failed turn (the sprite picker's posture): the
+		 * ports publish null, `attach-audio` writes nothing, and the reason — a
+		 * sentence that names no connection — goes to the run's log. A line with
+		 * nothing to speak makes no call at all.
+		 *
+		 * `streaming` is read and treated as off (A5); no connection is published
+		 * (R53) — the host records the one it used on the receipt's request.
+		 */
+		"core:oracle/speak@1": reads<typeof C.speak>(
+			async (input: NodeInput<typeof C.speak>, ctx: OracleCtx) => {
+				const none = (cueMap: unknown = { source: "none", spans: [] }) =>
+					ok({ main: null, audio: null, cueMap, spokenAs: null, meta: null })
+				const cues = Array.isArray(input?.cues) ? input.cues : []
+				const text = typeof input?.text === "string" ? input.text : ""
+				if (!cues.length && !text.trim()) return none()
+
+				let result: any
+				try {
+					result = await ctx.call({
+						cues,
+						text,
+						speaker: input?.speaker ?? null,
+						language: input?.language ?? null,
+						template: input?.template,
+						prompts: input?.prompts,
+						variables: input?.variables,
+						connection: input?.connection,
+						sampling: input?.sampling,
+						params: {
+							gapMs: input?.params?.gapMs,
+							streaming: input?.params?.streaming
+						}
+					})
+				} catch (e) {
+					// A composed sentence names no connection and is safe to log;
+					// anything else (an adapter's own words) stays on the server.
+					ctx.log(
+						"warn",
+						e instanceof ComposedError
+							? `not spoken: ${e.message}`
+							: "not spoken: the speech step failed (see the server log)"
+					)
+					if (!(e instanceof ComposedError))
+						console.warn("[speak] failed:", e instanceof Error ? e.message : e)
+					return none()
+				}
+				for (const note of Array.isArray(result?.notes) ? result.notes : [])
+					ctx.log("info", String(note))
+				if (result?.isAborted || !result?.audio) return none()
+
+				// What the service honoured and what it could not — the only way
+				// "why did the speed do nothing" is answerable.
+				ctx.reportSampling?.(
+					Object.fromEntries((result.applied ?? []).map((k: string) => [k, true])),
+					result.ignored ?? []
+				)
+				return ok({
+					main: result.audio,
+					audio: result.audio,
+					cueMap: result.cueMap ?? { source: "none", spans: [] },
+					spokenAs: result.spokenAs ?? null,
+					meta: result.meta ?? null
+				})
+			},
+			{
+				ports: [
+					"cues",
+					"speaker",
+					"language",
+					"text",
+					"connection",
+					"sampling",
+					"prompts",
+					"template",
+					"variables"
+				],
+				params: ["streaming", "gapMs"]
 			}
 		),
 
@@ -6703,7 +7259,7 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 			},
 			{
 				ports: ["routine"],
-				params: ["summary", "lore", "cast", "relationships", "worldState", "scenes", "goals", "goalReached", "sceneMovedOn"]
+				params: ["lore", "cast", "relationships", "worldState", "scenes", "goals", "goalReached", "sceneMovedOn"]
 			}
 		),
 		"core:query/available-tools@1": reads<typeof C.availableTools>(
@@ -6875,6 +7431,19 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 		 * contract's rules: anything that is not a list is a list of one,
 		 * `first` absent on an empty list, `rest` always a list.
 		 */
+		// 🚧 A drafted card or book read out of a reply (M2c path B): pure, the SDK's `readLibraryDraft`.
+		"core:task/read-library-draft@1": reads<typeof C.readLibraryDraft>(
+			async (input: NodeInput<typeof C.readLibraryDraft>) => {
+				const read = readLibraryDraft(input?.text)
+				return ok({
+					main: { make: read.make, ...(read.draft ? { draft: read.draft } : {}) },
+					text: read.text,
+					make: read.make,
+					...(read.draft ? { draft: read.draft } : {})
+				})
+			},
+			{ ports: ["text"] }
+		),
 		"core:task/split-first@1": reads<typeof C.splitFirst>(
 			async (input: NodeInput<typeof C.splitFirst>) => {
 				const raw = input?.items
@@ -7018,10 +7587,13 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 				const add = (
 					id: number | null | undefined,
 					name: unknown,
-					nickname?: unknown
+					nickname?: unknown,
+					seatRef?: string | null
 				) => {
-					if (id == null || !Number.isFinite(id)) return
-					const key = `character:${id}`
+					// A card-less seat has no card id: it is an option by its host-filled ref alone.
+					if (!seatRef && (id == null || !Number.isFinite(id))) return
+					// ⏳ The seat's own ref — the row's host-filled one (member form once `state/memberForm.ts` is on), else the card form.
+					const key = seatRef || `character:${id}`
 					if (seen.has(key)) return
 					const label = [name, nickname]
 						.map((n) => (typeof n === "string" ? n.trim() : ""))
@@ -7041,7 +7613,7 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 						const seat = cc
 						if (!seat?.character || seat.removedAt != null) continue
 						if (seat.enabled === false) continue
-						add(seat.character.id, seat.character.name, seat.character.nickname)
+						add(seat.character.id, seat.character.name, seat.character.nickname, seat.ref)
 					}
 				if (exclude !== "personas")
 					for (const cp of cast?.sessionPersonas ?? []) {
@@ -7049,7 +7621,7 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 						// A persona's own name only, as `castEntityRefs` has
 						// it: nothing else in the prompt answers to a
 						// persona's nickname.
-						add(cp.persona.id, cp.persona.name)
+						add(cp.persona.id, cp.persona.name, undefined, cp.ref)
 					}
 				// `json` is the document `make-choices` reads off its own `json`
 				// port, in exactly that shape. No `addressee`: the document's is
@@ -7654,14 +8226,16 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 				// asked about — round robin's own rule — so a `round` under the
 				// model path ends when everyone has had their turn, instead of
 				// running to the auto-advance cap on a model that keeps picking.
-				const spoken = spokenRefsSince(messages)
 				const everyone = (input?.candidates ?? []) as TurnCandidate[]
+				// ⏳ The cast lookup, from the candidates (member form once on).
+				const refOfMember = seatRefLookupOfCandidates(everyone)
+				const spoken = spokenRefsSince(messages, refOfMember)
 				const candidates = everyone.filter((c) => !spoken.has(c.ref))
 				const done = (order: TurnEntry[]) => ok({ main: order, order })
 				if (!candidates.length) return done([])
 				const fallback = (why: string) => {
 					ctx.log("warn", `${why} — round robin stands`)
-					return done(roundRobinEntries(candidates, messages))
+					return done(roundRobinEntries(candidates, messages, refOfMember))
 				}
 
 				// Names from every candidate — who already spoke this round is
@@ -7672,14 +8246,18 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 				for (const c of everyone) nameOf.set(c.ref, c.name)
 				const seatable = new Set(candidates.map((c) => c.ref))
 				const who = (m: RotationMessage & { content?: unknown }) => {
+					// ⏳ By seat: a person's line is its sender (`senderRefOf`), a
+					// reply its seat by `castMemberId` (member form once on), else the
+					// card form, then the projected speaker.
 					const ref =
 						m.role === "user"
-							? m.personaId != null
-								? `character:${m.personaId}`
-								: null
-							: m.characterId != null
-								? `character:${m.characterId}`
-								: (m.speaker ?? null)
+							? senderRefOf(m, refOfMember)
+							: ((m.castMemberId != null
+									? refOfMember?.(m.castMemberId, "character-seat")
+									: undefined) ??
+								(m.characterId != null
+									? `character:${m.characterId}`
+									: (m.speaker ?? null)))
 					return (ref && nameOf.get(ref)) || (m.role === "user" ? "User" : "Narrator")
 				}
 				const recent = messages
@@ -7835,7 +8413,10 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 					ctx.read("lorebook_entries", {
 						sessionId: input?.scope?.sessionId,
 						currentCharacterId:
-							input?.scope?.currentCharacterId ?? null
+							input?.scope?.currentCharacterId ?? null,
+						...(input?.scope?.currentCastMemberId != null
+							? { currentCastMemberId: input.scope.currentCastMemberId }
+							: {}),
 					}),
 					// Read for its names alone — see `castEntityRefs`. A session
 					// that no longer exists reads as `null`, which is an empty cast,
@@ -7958,7 +8539,7 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 		"core:outlet/set-session-annex@1": reads<typeof C.setSessionAnnex>(
 			async (input: NodeInput<typeof C.setSessionAnnex>, ctx: OutletCtx) =>
 				ok(await ctx.commit(input)),
-			{ ports: ["value"], params: ["owner", "merge", "sharedAnnex"] }
+			{ ports: ["value", "base"], params: ["owner", "merge", "sharedAnnex"] }
 		),
 		/**
 		 * An annex field's write (2026-09-26): the host reads the field's
@@ -7967,6 +8548,17 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 		 */
 		"core:outlet/set-annex-field@1": reads<typeof C.setAnnexField>(
 			async (input: NodeInput<typeof C.setAnnexField>, ctx: OutletCtx) =>
+				ok(await ctx.commit(input)),
+			{ ports: ["payload"] }
+		),
+		/** 🚧 The lorebook annex's two writes (M0, SHAPES L9): the host's commit routes them. */
+		"core:outlet/set-lorebook-annex@1": reads<typeof C.setLorebookAnnex>(
+			async (input: NodeInput<typeof C.setLorebookAnnex>, ctx: OutletCtx) =>
+				ok(await ctx.commit(input)),
+			{ ports: ["value", "base"] }
+		),
+		"core:outlet/set-lorebook-annex-field@1": reads<typeof C.setLorebookAnnexField>(
+			async (input: NodeInput<typeof C.setLorebookAnnexField>, ctx: OutletCtx) =>
 				ok(await ctx.commit(input)),
 			{ ports: ["payload"] }
 		),
@@ -7993,6 +8585,29 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 				})
 			},
 			{ ports: ["user", "name", "retire"] }
+		),
+		/**
+		 * 🚧 A seat benched or brought back by a genre's pipeline (owner
+		 * 2026-11-10): the host's commit is `setSeatBench`, behind
+		 * `writes.seats`; the seat it changed is lifted beside the write
+		 * result as one reference and a one-item list.
+		 */
+		"core:outlet/set-seat-bench@1": reads<typeof C.setSeatBench>(
+			async (input: NodeInput<typeof C.setSeatBench>, ctx: OutletCtx) => {
+				const { seat, halt: halted, ...ids } = (await ctx.commit(input)) as {
+					seat?: unknown
+					halt?: unknown
+				}
+				if (typeof halted === "string") return halt(halted)
+				const ref = typeof seat === "string" ? seat : null
+				return ok({
+					status: "committed",
+					ids,
+					seat: ref,
+					seats: ref ? [ref] : []
+				})
+			},
+			{ ports: ["seat", "benched"] }
 		),
 		/**
 		 * 🚧 A composer opened or closed by the genre (owner ruling
@@ -8028,7 +8643,87 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 				if (typeof halted === "string") return halt(halted)
 				return ok({ status: "committed", ids, cue: cue ?? null })
 			},
-			{ ports: ["at", "channel", "reason"], params: ["ask"] }
+			{ ports: ["at", "channel", "reason", "trigger"], params: ["ask"] }
+		),
+		/**
+		 * 🚧 The scene summaries routine's look: the host reads
+		 * `sceneSummaryDueOf` (`scenes/sceneSummaryDue.ts`), read-only. `main` is the
+		 * oldest finished scene due a summary as its id, or `null`.
+		 */
+		"core:query/scene-summary-due@1": reads<typeof C.sceneSummaryDue>(
+			async (input: NodeInput<typeof C.sceneSummaryDue>) => {
+				const sessionId = input?.scope?.sessionId
+				if (sessionId === undefined)
+					return halt(
+						"there is no session to look for a scene due a summary in — the run is not scoped to a session"
+					)
+				const raw = input?.params?.depth
+				const depth = typeof raw === "number" && Number.isInteger(raw) && raw >= 1 ? raw : 6
+				const db = (await import("$lib/server/db")).db as never
+				const { sceneSummaryDueOf } = await import("$lib/server/scenes/sceneSummaryDue")
+				const result = await sceneSummaryDueOf(db, sessionId, { depth })
+				return ok({ main: result.sceneId })
+			},
+			{ ports: ["scope"], params: ["depth"] }
+		),
+		/**
+		 * 🚧 *Earlier in the story*: the session's closed main-channel scenes with a
+		 * usable summary and no history entry (`earlierScenesOf`), read-only, with
+		 * the block's share of the budget: `maxTokens = floor(share × budget.total)`,
+		 * `null` with no usable budget. Which of them show is Assemble's call, once
+		 * it knows which lines it keeps. Writes nothing.
+		 */
+		"core:query/earlier-scenes@1": reads<typeof C.earlierScenes>(
+			async (input: NodeInput<typeof C.earlierScenes>) => {
+				const sessionId = input?.scope?.sessionId
+				if (sessionId === undefined)
+					return halt(
+						"there is no session to read earlier scenes from — the run is not scoped to a session"
+					)
+				const raw = input?.params?.share
+				const share = typeof raw === "number" && Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : 0.15
+				const total = (input?.budget as { total?: unknown } | undefined)?.total
+				const maxTokens =
+					typeof total === "number" && Number.isFinite(total) && total > 0
+						? Math.floor(share * total)
+						: null
+				const db = (await import("$lib/server/db")).db as never
+				const { earlierScenesOf } = await import("$lib/server/scenes/earlierScenes")
+				const scenes = await earlierScenesOf(db, sessionId)
+				return ok({ main: { maxTokens, scenes } })
+			},
+			{ ports: ["scope", "budget"], params: ["share"] }
+		),
+		/**
+		 * 🚧 Summarize a finished scene: the host's commit starts the genre's own
+		 * summarizer in the background (`startRoutineSceneSummary`,
+		 * `sockets/scenes.ts`) and returns at once. `main` is
+		 * `{ status: "committed", ids }`.
+		 */
+		"core:outlet/summarize-finished-scene@1": reads<typeof C.summarizeFinishedScene>(
+			async (input: NodeInput<typeof C.summarizeFinishedScene>, ctx: OutletCtx) => {
+				const { halt: halted, ...ids } = (await ctx.commit(input)) as Record<string, unknown> & {
+					halt?: unknown
+				}
+				if (typeof halted === "string") return halt(halted)
+				return ok({ status: "committed", ids })
+			},
+			{ ports: ["scene", "routine"] }
+		),
+		/**
+		 * 🚧 A note in a scene (★S4, owner 2026-11-10): the host's commit is
+		 * `appendSceneNote` (`scenes/liveScenes.ts`); a refusal throws with its
+		 * sentence. `main` is `{ status: "committed", ids }` with the scene's id.
+		 */
+		"core:outlet/note-scene@1": reads<typeof C.noteScene>(
+			async (input: NodeInput<typeof C.noteScene>, ctx: OutletCtx) => {
+				const { halt: halted, ...ids } = (await ctx.commit(input)) as Record<string, unknown> & {
+					halt?: unknown
+				}
+				if (typeof halted === "string") return halt(halted)
+				return ok({ status: "committed", ids })
+			},
+			{ ports: ["text", "scene", "sources"] }
 		),
 		/**
 		 * 🚧 A stat configured by a pipeline (owner ruling 2026-10-15): the
@@ -8107,12 +8802,27 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 			) => ok(await ctx.commit(input)),
 			{ ports: ["target", "image"] }
 		),
+		/**
+		 * The audio twin of attach-image. 🚧 Speech (S3/S6): `meta` is the
+		 * `SpokenMeta` the speak step published — the host records it per swipe
+		 * beside the part — and `replace` swaps the line's earlier spoken audio for
+		 * this one. No `audio` (nothing was spoken, or speaking failed and said so
+		 * with null) writes nothing and never throws: the host answers
+		 * `written: false`, so no `message-updated` is caused.
+		 */
 		"core:outlet/attach-audio@1": reads<typeof C.attachAudio>(
 			async (
 				input: NodeInput<typeof C.attachAudio>,
 				ctx: OutletCtx
-			) => ok(await ctx.commit(input)),
-			{ ports: ["target", "audio"] }
+			) => {
+				// `written` is the executor's (no write, no event), not a row id.
+				const { written: _, ...ids } = (await ctx.commit(input)) as Record<
+					string,
+					unknown
+				>
+				return ok(ids)
+			},
+			{ ports: ["target", "audio", "meta"], params: ["replace"] }
 		),
 		/**
 		 * The form's answer, committed as a click (U5d). The commit fires the
@@ -8183,8 +8893,30 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 			async (input: NodeInput<typeof C.pickSprite>, ctx: OracleCtx) => {
 				const none = ok({ main: null, pick: null, choices: null })
 				if (input?.params?.enabled === false) return none
-				const characterId = speakingCharacterId(input?.speaker)
-				if (characterId === null) return none
+				let characterId = speakingCharacterId(input?.speaker)
+				// 🚧 A card-less seat's speaker, as a member id — never in
+				// `characterId` (a card id; the two share one id range).
+				let castMemberId: number | null = null
+				// 🚧 A `seated-member:<id>` speaker (seat-cast S2: refs in
+				// accept it) picks for the card its seat holds; a card-less
+				// character seat picks from its member's own sets (S4).
+				// Resolved here, where the run's session is in hand.
+				const sessionId = input?.scope?.sessionId
+				if (
+					characterId === null &&
+					typeof input?.speaker === "string" &&
+					input.speaker.trim().startsWith("seated-member:") &&
+					typeof sessionId === "number"
+				) {
+					const { db } = await import("$lib/server/db")
+					// The seat's card, by `seatOf` — the stored form is member
+					// form once `state/memberForm.ts` is on, which names no card.
+					const seat = await seatOf(db as never, sessionId, input.speaker)
+					characterId = seat?.cardId ?? null
+					if (characterId === null && seat?.kind === "character")
+						castMemberId = seat.castMemberId ?? null
+				}
+				if (characterId === null && castMemberId === null) return none
 
 				let found: {
 					choices?: SpriteChoicesV1 | null
@@ -8194,7 +8926,7 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 				try {
 					found = (await ctx.call({
 						sessionId: input?.scope?.sessionId,
-						characterId,
+						...(characterId !== null ? { characterId } : { castMemberId }),
 						text: typeof input?.text === "string" ? input.text : "",
 						set: input?.set ?? null
 					})) as typeof found
@@ -8237,22 +8969,24 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 			async (input: NodeInput<typeof C.advanceStoryClock>, ctx: OutletCtx) => {
 				// 🚧 `skipped` (live scenes §15 G7): the sentence a skipped
 				// move left in the ledger — on the receipt with the result.
-				const { clock, label, skipped, ...ids } = (await ctx.commit(input)) as {
+				const { clock, label, skipped, moved, ...ids } = (await ctx.commit(input)) as {
 					id: unknown
 					sessionId?: unknown
 					clock?: unknown
 					label?: unknown
 					skipped?: unknown
+					moved?: unknown
 				}
 				return ok({
 					status: "committed",
 					ids,
 					clock: clock ?? null,
 					label: label ?? "",
-					skipped: typeof skipped === "string" ? skipped : ""
+					skipped: typeof skipped === "string" ? skipped : "",
+					...(typeof moved === "number" ? { moved } : {})
 				})
 			},
-			{ ports: ["by", "unit", "cause", "onRefusal"], params: ["by", "unit"] }
+			{ ports: ["by", "unit", "to", "cause", "onRefusal"], params: ["by", "unit"] }
 		),
 		"core:outlet/show-sprite@1": reads<typeof C.showSprite>(
 			async (input: NodeInput<typeof C.showSprite>, ctx: OutletCtx) => {
@@ -8414,6 +9148,13 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 			) => ok(await ctx.commit(input)),
 			{ ports: ["fromMessage", "title"] }
 		),
+		"core:outlet/convert-ruleset@1": reads<typeof C.convertRuleset>(
+			async (
+				input: NodeInput<typeof C.convertRuleset>,
+				ctx: OutletCtx
+			) => committedOrHalt(await ctx.commit(input)),
+			{ ports: ["to"] }
+		),
 		/**
 		 * The finished entry, and — since L2/L3 (2026-09-17) — its kind and
 		 * its links.
@@ -8458,6 +9199,18 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 			{ ports: ["entry", "name", "content", "fields", "sources"] }
 		),
 		/**
+		 * 🚧 Change a cast member of this session (plan §32 §10): profile
+		 * fields, or `{ follow: true }` to follow the card again; gated by
+		 * `writes.lore` and the lore write mode, taken back with its turn.
+		 */
+		"core:outlet/update-cast-member@1": reads<typeof C.updateCastMember>(
+			async (
+				input: NodeInput<typeof C.updateCastMember>,
+				ctx: OutletCtx
+			) => ok(await ctx.commit(input)),
+			{ ports: ["member", "changes"] }
+		),
+		/**
 		 * One link between two entries of this session's lorebook.
 		 *
 		 * `to` takes a **name** as well as an id, and that is the half that
@@ -8481,6 +9234,25 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 				ports: ["from", "to", "name", "description", "sources"],
 				params: ["linkType", "reverseLinkType"]
 			}
+		),
+		/**
+		 * 🚧 The library outlets (M2c path B, plan §8): a card or a book in,
+		 * a row out — or a proposal, or a refusal — as the acting person under
+		 * their library write mode. Everything is the commit's to judge
+		 * (host.ts `libraryOutlet`): the genre's `writes.library`, the person's
+		 * rights (`personMay`), the mode.
+		 */
+		"core:outlet/create-character@1": reads<typeof C.createCharacter>(
+			async (input: NodeInput<typeof C.createCharacter>, ctx: OutletCtx) => committedOrHalt(await ctx.commit(input)),
+			{ ports: ["card"] }
+		),
+		"core:outlet/update-character@1": reads<typeof C.updateCharacter>(
+			async (input: NodeInput<typeof C.updateCharacter>, ctx: OutletCtx) => committedOrHalt(await ctx.commit(input)),
+			{ ports: ["characterId", "changes"] }
+		),
+		"core:outlet/create-lorebook@1": reads<typeof C.createLorebook>(
+			async (input: NodeInput<typeof C.createLorebook>, ctx: OutletCtx) => committedOrHalt(await ctx.commit(input)),
+			{ ports: ["lorebook"] }
 		),
 		// Gate-eligible, and that is the mechanism behind "a graph build stops at
 		// the review screen": what comes back is a proposal, not rows.
@@ -8948,7 +9720,14 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 		const seats = Array.isArray(cast?.sessionCharacters)
 			? cast.sessionCharacters
 			: []
-		const given = factIdentity(fact)
+		// 🚧 (seat-cast S2) A `seated-member:<memberId>` ref is read as its
+		// seat's card form first; nobody seated as that member → the fact
+		// names no row, and resolves by name like any other.
+		const given = factIdentity(
+			typeof fact.ref === "string"
+				? { ...fact, ref: cardFormRefInCast(cast, fact.ref) ?? undefined }
+				: fact
+		)
 		const byRow =
 			given?.id != null
 				? (seats.find((cc: any) => cc?.character?.id === given.id)
@@ -8979,7 +9758,11 @@ export function coreBindings(run: RenderRun = {}): Bindings {
 		return {
 			name,
 			seated,
-			ref: given ? given.ref : seated != null ? `character:${seated}` : null,
+			// ⏳ The voice's seat ref: member form once `state/memberForm.ts` is on (the cast's seat answering the card), else as named.
+			ref: ((): string | null => {
+				const named = given ? given.ref : seated != null ? `character:${seated}` : null
+				return named === null ? null : (storedSeatRefInCast(cast, named) ?? named)
+			})(),
 			named: !!given || !!name,
 			card:
 				fact.character && typeof fact.character === "object"

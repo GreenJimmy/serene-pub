@@ -12,8 +12,10 @@
  * proposal: it names both, and the preset wins. See `sessionsCreateHandler`.
  */
 import type { StoredSwapContribution } from "$lib/shared/swaps"
-import { settingValueOf } from "@serene-pub/sdk"
+import { settingValueOf, type SessionCreationMode } from "@serene-pub/sdk"
+import { creationModeBlocker } from "./creationModes"
 import { adoptedBookRules, howStrictChoices, rigourFor, rulesField } from "$lib/shared/rulesets/rulesOffer"
+import type { GenreRulesOffer, RulesChoice } from "$lib/shared/rulesets/rulesOffer"
 import {
 	INITIAL_PRESET_FILLABLE_FIELDS,
 	resolvePresetFill,
@@ -278,6 +280,19 @@ export function autoSessionName(
 }
 
 /**
+ * 🚧 The name a session takes while the person is playing as a persona draft
+ * (the game's offered persona, made only on Start) and no character is in the
+ * cast: where they are, when a lorebook is chosen, else who they are. Never
+ * "New session" — the draft's name is all there is to call it by.
+ */
+export function draftSessionName(
+	draftName: string,
+	bookName: string | null
+): string {
+	return bookName ? `${draftName} in ${bookName}` : `Session as ${draftName}`
+}
+
+/**
  * The name the session is created with: what the person typed, trimmed, or —
  * left blank — the automatic name (`autoSessionName`).
  */
@@ -396,6 +411,8 @@ export function filterPickRows<T extends PickFilterCandidate>(
 export interface ReconcilableSelection {
 	genreFields: Record<string, unknown>
 	characterIds: number[]
+	/** 🚧 Card-less members seated as characters; they share the cast cap. */
+	castMemberIds?: number[]
 	personaIds: number[]
 	lorebookId: number | null
 }
@@ -423,6 +440,17 @@ export function reconcileToShape(
 			Object.entries(held.genreFields).filter(([k]) => k in declared)
 		),
 		characterIds: held.characterIds.slice(0, charMax),
+		...(held.castMemberIds
+			? {
+					castMemberIds: held.castMemberIds.slice(
+						0,
+						Math.max(
+							0,
+							charMax - Math.min(held.characterIds.length, charMax)
+						)
+					)
+				}
+			: {}),
 		personaIds: held.personaIds.slice(0, personaMax),
 		lorebookId: shape.lorebook ? held.lorebookId : null
 	}
@@ -434,6 +462,8 @@ export interface CreateSessionInput {
 	genreId: string
 	presetId: number | null
 	characterIds: number[]
+	/** 🚧 Card-less members of the chosen book to seat as characters (plan §34.2); never card ids. */
+	castMemberIds?: number[]
 	personaIds: number[]
 	scenario?: string
 	tags?: string[]
@@ -505,6 +535,9 @@ export function buildCreatePayload(
 			...(input.rigour ? { rigour: input.rigour } : {})
 		} as Sockets.Sessions.Create.Params["session"],
 		characterIds,
+		...(input.castMemberIds?.length
+			? { castMemberIds: [...input.castMemberIds] }
+			: {}),
 		personaIds: [...input.personaIds],
 		characterPositions: Object.fromEntries(
 			characterIds.map((id, i) => [id, i])
@@ -528,6 +561,67 @@ export function applyPresetFill(
 	preset: PresetRow | undefined | null
 ): { fields: PresetFillableFields; fillState: PresetFillState } {
 	return resolvePresetFill(fields, fillState, preset?.defaults)
+}
+
+/**
+ * 🚧 **The book pick** (§22, owner GO 2026-11-05): the start form's one choice,
+ * for a genre with a lorebook step and a rules offer, of the world a session
+ * reads and the rules it plays — ONE of
+ * - `book`: an existing lorebook (own, shared or provided), sent as
+ *   `lorebookId`; its own rules are adopted, a book on Freeform brings none
+ *   and the person's rules pick travels beside it (fix7, ★§22-1);
+ * - `blank`: no lorebook — the session's own book is made on the rules picked
+ *   (no `lorebookId`, `primaryRuleset`); a ruleset holds nothing (stateless);
+ * - `starter`: a starter lorebook copied into the session's own book
+ *   (`starterKit`), its rules adopted the same way.
+ * The three are today's three `sessions:create` shapes; `buildCreatePayload`
+ * does not change. NOT the Lorebooks view's list, and NOT the session's
+ * lorebook setting after start (the edit form's). How strict is the session's,
+ * never the book's: it stays its own field after the pick.
+ */
+export type BookPickKind = "book" | "blank" | "starter"
+
+/** 🚧 What one book (or starter lorebook) row brings, read against the genre's rules offer. */
+export interface BookRulesFit {
+	/** The rules the row brings; null for one on Freeform, which brings none (fix7). */
+	rulesId: string | null
+	/** The genre's choice for those rules when its offer lists them: name, fit, recommended. */
+	choice: RulesChoice | null
+	/**
+	 * Why the row can't be picked, as a sentence: a genre that plays only its
+	 * own rules (`rulesets: { only }`, ★§22-2 — the ruled lock) refuses a
+	 * book that brings others; and a genre always refuses rules it rates
+	 * Incompatible (owner 2026-11-05, no setting). Null when it can be picked.
+	 */
+	refusal: string | null
+}
+
+/** "A", "A or B", "A, B or C". */
+function orList(names: string[]): string {
+	return names.length > 1 ? `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}` : (names[0] ?? "")
+}
+
+/**
+ * 🚧 A book's (or starter lorebook's) rules against the genre's offer — the
+ * same rule `sessions:create` applies: its own rules are adopted
+ * (`adoptedBookRules`), an `only` genre refuses ones outside its list, and
+ * any genre refuses ones it rates Incompatible (`only` keeps priority).
+ */
+export function bookRulesFit(
+	offer: GenreRulesOffer,
+	primaryRuleset: string | null | undefined,
+	genreName?: string | null
+): BookRulesFit {
+	const rulesId = adoptedBookRules(primaryRuleset)
+	if (!rulesId) return { rulesId: null, choice: null, refusal: null }
+	const choice = offer.choices.find((c) => c.id === rulesId) ?? null
+	const refusal =
+		offer.only && !choice
+			? `${genreName || "This genre"} plays only by ${orList(offer.choices.map((c) => c.name))} rules.`
+			: choice?.fit?.rating === "incompatible"
+				? `${genreName || "This genre"} can't play ${choice.name}: ${choice.fit.reason}.`
+				: null
+	return { rulesId, choice, refusal }
 }
 
 /**
@@ -556,6 +650,13 @@ export class StartSessionFlow {
 	/** The chosen preset, or null while none is selected. */
 	presetId = $state<number | null>(null)
 
+	/** How the session starts (`new` unless the person or the prefill picked another). */
+	mode = $state<SessionCreationMode>("new")
+	/** The session a `branch` or `next-chapter` start follows; null for the other modes. */
+	from = $state<number | null>(null)
+	/** True once the person or the prefill picked a mode, so a genre's proposal never overrides it. */
+	modeChosen = $state(false)
+
 	/** The fields a preset's creation defaults can fill. */
 	fields = $state<PresetFillableFields>({
 		...INITIAL_PRESET_FILLABLE_FIELDS
@@ -566,7 +667,21 @@ export class StartSessionFlow {
 	private appliedPresetId: number | null = null
 
 	characterIds = $state<number[]>([])
+	/**
+	 * 🚧 Card-less members of the chosen book, seated as characters beside the
+	 * cards (plan §34.2). MEMBER ids: they share a range with card ids, so they
+	 * are never mixed into `characterIds`.
+	 */
+	castMemberIds = $state<number[]>([])
 	personaIds = $state<number[]>([])
+	/**
+	 * 🚧 (name: _persona draft_) The persona an applet's `create-session` offered
+	 * — a name and, perhaps, a description. It is NOT a persona card: it has no
+	 * id and creates nothing until Start makes the card, and it never rides
+	 * `sessions:create` (`payload`). It counts as one persona for readiness, and
+	 * is dropped when the genre takes no persona or the person picks another.
+	 */
+	personaDraft = $state<{ name: string; description?: string } | null>(null)
 
 	/** 🚧 The person's Rules pick; null takes the genre's default. */
 	rulesPick = $state<string | null>(null)
@@ -592,6 +707,8 @@ export class StartSessionFlow {
 		this.genres.find((g) => g.genreId === this.genreId) ?? null
 	)
 	shape = $derived(this.genre?.shape ?? null)
+	/** The mode the chosen genre suggests, or null. */
+	proposedMode = $derived<SessionCreationMode | null>(this.shape?.creationMode?.propose ?? null)
 	/** 🚧 The genre's Rules / How strict offer; null when it offers no choice (Chat). */
 	rulesOffer = $derived(this.genre?.rules ?? null)
 	/**
@@ -613,13 +730,27 @@ export class StartSessionFlow {
 		return typeof r === "string" ? r : null
 	})
 	/**
-	 * The rules the form starts on: the genre's default — unless the preset
-	 * pins a How strict that ruleset cannot play (Rule Based over Freeform),
-	 * when the first choice that plays it, recommended first.
+	 * The preset's ruleset: the Rules the preset pre-chooses (owner 2026-11-05:
+	 * a default, never a lock). Stored as a plain value or a setting decision;
+	 * an old `lock` on it is ignored. Not the person's pick (`rulesPick`) and
+	 * not a book's rules (`lorebookRules`).
+	 */
+	presetRules = $derived.by(() => {
+		const raw = (this.preset?.settings as Record<string, unknown> | null | undefined)?.ruleset
+		const r = raw === undefined ? undefined : settingValueOf(raw).value
+		return typeof r === "string" ? r : null
+	})
+	/**
+	 * The rules the form starts on: the preset's ruleset when the genre offers
+	 * it and does not rate it Incompatible; else the genre's default — unless
+	 * the preset pins a How strict that ruleset cannot play (Rule Based over
+	 * Freeform), when the first choice that plays it, recommended first.
 	 */
 	rulesDefault = $derived.by(() => {
 		const offer = this.rulesOffer
 		if (!offer) return null
+		const preset = this.presetRules
+		if (preset && offer.choices.some((c) => c.id === preset && c.fit?.rating !== "incompatible")) return preset
 		const want = this.presetRigour
 		const plays = (id: string) => howStrictChoices(offer, id).some((o) => o.id === want)
 		if (!want || plays(offer.defaultId)) return offer.defaultId
@@ -637,6 +768,22 @@ export class StartSessionFlow {
 	 * when the Rules stay the person's to choose (fix7).
 	 */
 	adoptedRules = $derived(adoptedBookRules(this.lorebookRules))
+	/**
+	 * 🚧 **The book pick** as it stands (see `BookPickKind`): null where the
+	 * form has no pick (a genre with no lorebook step, or no rules offer —
+	 * those keep today's Rules card or Lorebook card). `rulesId` is the rules
+	 * the session will play; `rulesFromBook` says the book (or starter
+	 * lorebook) brings them, so no rules choice is open under it.
+	 */
+	bookPick = $derived.by((): { kind: BookPickKind; rulesId: string | null; rulesFromBook: boolean } | null => {
+		if (!this.shape?.lorebook || !this.rulesOffer) return null
+		const kind: BookPickKind = this.starterKit ? "starter" : this.fields.lorebookId != null ? "book" : "blank"
+		return {
+			kind,
+			rulesId: this.adoptedRules ?? this.rulesNowId ?? null,
+			rulesFromBook: !!this.adoptedRules
+		}
+	})
 	/**
 	 * 🚧 The Rules field as the form shows it (`rulesField`): the chosen
 	 * lorebook's own rules, else the person's pick, else the default.
@@ -700,26 +847,54 @@ export class StartSessionFlow {
 	 * (`firstUnmetStartRule`). Never a lorebook: a session may always start
 	 * without one (RF fix 2, 2026-10-23).
 	 */
-	startBlocker = $derived(
-		firstUnmetStartRule({
-			genreId: this.genreId,
-			noPresetsForGenre: this.noPresetsForGenre,
-			characterCount: this.characterIds.length,
-			personaCount: this.personaIds.length,
-			floors: this.floors
+	startBlocker = $derived.by(() => {
+		const modeBlocker = creationModeBlocker({
+			mode: this.mode,
+			from: this.from,
+			lorebookId: this.fields.lorebookId,
+			starterKit: this.starterKit
 		})
-	)
+		// A branch ignores every other draft field server-side, so the cast floors do not apply.
+		if (this.mode === "branch") return modeBlocker
+		return (
+			modeBlocker ??
+			firstUnmetStartRule({
+				genreId: this.genreId,
+				noPresetsForGenre: this.noPresetsForGenre,
+				characterCount:
+					this.characterIds.length + this.castMemberIds.length,
+				personaCount:
+					this.personaIds.length + (this.personaDraft ? 1 : 0),
+				floors: this.floors
+			})
+		)
+	})
 	/** True once nothing stands in Start's way (`startBlocker` is null). */
 	canStart = $derived(this.startBlocker === null)
+
+	/** The person (or the prefill) picks how the session starts. */
+	chooseMode(m: SessionCreationMode) {
+		this.mode = m
+		this.modeChosen = true
+		if (m !== "branch" && m !== "next-chapter") this.from = null
+	}
 
 	chooseGenre(id: string) {
 		if (this.genreId === id) return
 		this.genreId = id
+		// Sessions are per genre, so a followed session is dropped; a proposal
+		// preselects only while nothing was chosen.
+		this.from = null
+		if (!this.modeChosen) {
+			const proposal = this.genres.find((g) => g.genreId === id)?.shape?.creationMode?.propose
+			this.mode = proposal ?? "new"
+		}
 		// Rules and How strict are the genre's to offer: a new genre starts
 		// from its own defaults.
 		this.rulesPick = null
 		this.rigourPick = null
 		this.askAnswers = {}
+		this.prefillAnswers = {}
 		// A preset belongs to one genre, so the answer below it reopens.
 		this.presetId = null
 		this.appliedPresetId = null
@@ -727,7 +902,8 @@ export class StartSessionFlow {
 	}
 
 	choosePreset(id: number | null) {
-		if (this.presetId !== id) this.askAnswers = {}
+		// A new preset starts the asks over — except the prefilled answers (the game's wizard gave them).
+		if (this.presetId !== id) this.askAnswers = { ...this.prefillAnswers }
 		this.presetId = id
 		if (id === null) {
 			this.appliedPresetId = null
@@ -751,6 +927,13 @@ export class StartSessionFlow {
 	 * preset's settings say rather than an older pre-fill's value.
 	 */
 	askAnswers = $state<Record<string, unknown>>({})
+	/**
+	 * 🚧 The caller's prefilled field values (an applet's `create-session`) that count as the
+	 * person's answers to the preset's asks — given in the game's own wizard, not in this form —
+	 * and survive a preset change (owner, 2026-11-05). Keys no preset asks are harmless here:
+	 * `sentGenreFields` reads only the asks. Cleared with the genre (a prefill is for one genre).
+	 */
+	prefillAnswers = $state<Record<string, unknown>>({})
 
 	/** Answer one start-form ask (a genre field), held until Start. */
 	setAsk(key: string, value: unknown) {
@@ -797,7 +980,7 @@ export class StartSessionFlow {
 			return
 		}
 		const max = this.shape?.characters?.max ?? Infinity
-		if (this.characterIds.length >= max) return
+		if (this.characterIds.length + this.castMemberIds.length >= max) return
 		this.characterIds = [...this.characterIds, id]
 		if (this.personaIds.includes(id))
 			this.personaIds = this.personaIds.filter((p) => p !== id)
@@ -810,10 +993,41 @@ export class StartSessionFlow {
 	 */
 	addCharacters(ids: number[]) {
 		const max = this.shape?.characters?.max ?? Infinity
-		this.characterIds = addToCast(this.characterIds, ids, max)
+		this.characterIds = addToCast(
+			this.characterIds,
+			ids,
+			max - this.castMemberIds.length
+		)
 		const cast = new Set(this.characterIds)
 		if (this.personaIds.some((p) => cast.has(p)))
 			this.personaIds = this.personaIds.filter((p) => !cast.has(p))
+	}
+
+	/**
+	 * 🚧 Add card-less members to the cast at once, in the order picked, up to
+	 * the genre's cap less the cards already in it.
+	 */
+	addCastMembers(ids: number[]) {
+		const max = this.shape?.characters?.max ?? Infinity
+		this.castMemberIds = addToCast(
+			this.castMemberIds,
+			ids,
+			max - this.characterIds.length
+		)
+	}
+
+	/** Take a card-less member out of the cast. */
+	removeCastMember(id: number) {
+		this.castMemberIds = this.castMemberIds.filter((m) => m !== id)
+	}
+
+	/**
+	 * Keep only the picked members the chosen book holds: a book changed under
+	 * the picks leaves the ones that are not in the new one.
+	 */
+	keepCastMembersIn(memberIds: ReadonlySet<number>) {
+		const kept = this.castMemberIds.filter((m) => memberIds.has(m))
+		if (kept.length !== this.castMemberIds.length) this.castMemberIds = kept
 	}
 
 	/** Move a cast member one place earlier (`-1`) or later (`1`). */
@@ -824,10 +1038,24 @@ export class StartSessionFlow {
 	/** Seat the person as this character — any character, flagged or not. */
 	playAs(id: number) {
 		this.personaIds = [id]
+		// An existing persona replaces the game's offered one.
+		this.personaDraft = null
 		// The picker hides the cast, but a prefill or a stale row must not
 		// leave the same character on both sides.
 		if (this.characterIds.includes(id))
 			this.characterIds = this.characterIds.filter((c) => c !== id)
+	}
+
+	/**
+	 * 🚧 The book pick's blank row: no lorebook and no starter lorebook, the
+	 * session's own book made on these rules. The component that holds the
+	 * starter lorebook card's id clears its own.
+	 */
+	pickBlank(rulesId: string) {
+		this.fields = { ...this.fields, lorebookId: null }
+		this.starterKit = null
+		this.lorebookRules = null
+		this.rulesPick = rulesId
 	}
 
 	/** Re-fit held fields, cast and lorebook to the chosen genre's shape. */
@@ -835,6 +1063,7 @@ export class StartSessionFlow {
 		const next = reconcileToShape(this.shape, {
 			genreFields: this.fields.genreFields,
 			characterIds: this.characterIds,
+			castMemberIds: this.castMemberIds,
 			personaIds: this.personaIds,
 			lorebookId: this.fields.lorebookId
 		})
@@ -844,18 +1073,27 @@ export class StartSessionFlow {
 			lorebookId: next.lorebookId
 		}
 		this.characterIds = next.characterIds
+		this.castMemberIds = next.castMemberIds ?? []
 		this.personaIds = next.personaIds
+		// A genre that takes no persona has no seat for the draft either.
+		if (
+			this.shape &&
+			(this.shape.personas ? this.shape.personas.max === 0 : true)
+		)
+			this.personaDraft = null
 		// A genre with no lorebook step has no place for a kit either.
 		if (!this.shape?.lorebook && this.shape) this.starterKit = null
 	}
 
 	/** The `sessions:create` body for what the flow currently holds. */
 	payload(name: string): Sockets.Sessions.Create.Params {
-		return buildCreatePayload({
+		const built = buildCreatePayload({
 			name,
 			genreId: this.genreId ?? STANDARD_GENRE_ID,
 			presetId: this.presetId,
 			characterIds: this.characterIds,
+			// A copy of the world has members of its own, so a new world takes none.
+			castMemberIds: this.mode === "new" ? this.castMemberIds : [],
 			personaIds: this.personaIds,
 			scenario: this.fields.scenario,
 			tags: this.fields.tags,
@@ -869,5 +1107,10 @@ export class StartSessionFlow {
 			primaryRuleset: this.rulesOffer && !this.adoptedRules ? this.rulesNowId : null,
 			rigour: this.rigour
 		})
+		return {
+			...built,
+			...(this.mode !== "new" ? { mode: this.mode } : {}),
+			...(this.from != null ? { from: this.from } : {})
+		}
 	}
 }

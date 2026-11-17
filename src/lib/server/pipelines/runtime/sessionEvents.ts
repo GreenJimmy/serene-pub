@@ -87,6 +87,9 @@ const OFF_LEDGER: ReadonlySet<string> = new Set([
 	// 🚧 pr-6 (supervisor C, 2026-10-25): host moments too — a reply is told
 	// nothing by the line settling, a summary landing or the session closing.
 	sdkSessionEvents.historySettled,
+	// 🚧 Speech follow-ups A1: a line a run wrote is settled — it describes no
+	// write of its own (the line is on record through `message-completed`).
+	sdkSessionEvents.messageSettled,
 	sdkSessionEvents.sceneSummaryApplied,
 	sdkSessionEvents.sessionArchived
 ])
@@ -154,6 +157,17 @@ export async function emitSessionEvent(
 		at
 	} as SessionEventPayload
 	const cause = payload.cause
+	// 🚧 A line a run landed, noted for the message-settled emit its run makes
+	// once its receipt is saved (`settledLines.ts`). A person's edit is no landing.
+	if (
+		opts.event === sdkSessionEvents.messageCompleted &&
+		cause?.runId &&
+		cause.kind !== "edit" &&
+		typeof (payload as { messageId?: unknown }).messageId === "number"
+	) {
+		const { noteLineLanded } = await import("$lib/server/pipelines/runtime/settledLines")
+		noteLineLanded(cause.runId, (payload as { messageId: number }).messageId)
+	}
 	/**
 	 * 🚧 The routine run behind this write, if one is (R19) — read now, while
 	 * that run is still in flight: a routine takes no turn, and what its own
@@ -253,11 +267,14 @@ export async function emitSessionEvent(
 		}
 	}
 
-	// (b5) 🚧 A line landed, so a scene boundary may belong at it (live
-	// scenes §4): the boundary watcher reads the session's scene settings and
-	// the line's stamp against the line before it, and records a scene cue
-	// (Suggested) or places the boundary (Automatic). One read when the
-	// session is Manual or places no scene; never throws.
+	// (b5) 🚧 A line landed: the boundary hook keeps only what is tied to this
+	// line (a person's *End scene here* is bound to it and the next scene
+	// opened or offered; a time action's marker is bound to it and stays
+	// pending) and the open scene's cast refresh. It fires no boundary
+	// trigger: the scenes routine (`core:spec/scene-boundaries`) finds those a
+	// couple of rounds later, and a session whose genre or preset registers
+	// none gets none. One read when the session is Manual or places no
+	// scene; never throws.
 	if (opts.event === sdkSessionEvents.messageCompleted) {
 		const messageId = (payload as { messageId?: unknown }).messageId
 		if (typeof messageId === "number") {
@@ -275,6 +292,22 @@ export async function emitSessionEvent(
 					(id): id is string => typeof id === "string" && id !== ""
 				)
 			})
+		}
+	}
+
+	// (b6) 🚧 A line is settled: core's automatic read-aloud starts the speech
+	// run as its OWN run. The listener only decides and starts it (detached);
+	// it never throws and never holds this emit.
+	if (opts.event === sdkSessionEvents.messageSettled) {
+		try {
+			const { onMessageSettled } = await import("$lib/server/speech/onMessageSettled")
+			await onMessageSettled(db, {
+				payload: payload as never,
+				userId: opts.userId,
+				io: opts.io
+			})
+		} catch (err) {
+			console.warn("[sessionEvents] the read-aloud listener failed:", err)
 		}
 	}
 
@@ -363,6 +396,10 @@ async function landedLineFacts(
 		.limit(1)
 	if (!row) return {}
 	const { canonicalChannel } = await import("$lib/server/messages/channels")
+	// ⏳ The stamp (`withSpeakerStamp`) leaves a seat's line with its member-form
+	// `metadata.speaker` once the flip is on, so `said` is the seat's ref; the
+	// card form below is the fallback of a line from before the stamp (the
+	// doors read it as its seat).
 	const said = (row.metadata as { speaker?: unknown } | null)?.speaker
 	const speaker =
 		typeof said === "string" && said

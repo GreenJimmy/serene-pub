@@ -9,8 +9,8 @@ import { registerService } from "./index"
  *
  * Each service adapts an existing manager rather than replacing it. That is
  * deliberate: `subprocessManager.ts` in particular carries hard-won behaviour
- * around PID files, adopting an already-running instance and distinguishing an
- * external process from one we spawned. None of that is generic, none of it
+ * around PID files, reaping its own leftover process and refusing a port held
+ * by one it did not start. None of that is generic, none of it
  * belongs in a registry, and rewriting it to fit an abstraction would trade
  * working code for symmetry.
  */
@@ -71,6 +71,17 @@ export async function registerCoreServices() {
 		shutdown: async () => dailyBackup.stop()
 	})
 
+	// 🚧 Spoken-audio retention (speech build, design §12): an hourly, unref'd
+	// sweep that applies the pub's "keep spoken audio" setting to the files a
+	// spoken line leaves behind. Stopped on shutdown with the database still open.
+	const spokenRetention = await import("$lib/server/media/spokenRetention")
+	registerService({
+		id: "spokenRetention",
+		label: "Spoken audio retention",
+		reconcileOnBoot: async () => spokenRetention.startSpokenRetention(),
+		shutdown: async () => spokenRetention.stopSpokenRetention()
+	})
+
 	// A `downloading` row in `local_models` is per-process state written to a
 	// durable column: this process's download map is empty at boot, so a row
 	// still saying `downloading` belongs to a run that ended. Nothing else can
@@ -125,5 +136,26 @@ export async function registerCoreServices() {
 		// runner depended on the socket server attaching.
 		reconcileOnBoot: () => koboldcpp.checkForOrphanOnBoot(),
 		shutdown: () => koboldcpp.stop()
+	})
+
+	// audio.cpp, run by Serene Pub: reap a leftover process of ours, then
+	// keep the managed endpoint's display base URL in step with the port.
+	const audiocpp = await import("$lib/server/audiocpp/process")
+	registerService({
+		id: "audiocpp",
+		label: "audio.cpp",
+		reconcileOnBoot: async () => {
+			await audiocpp.checkForOrphanOnBoot()
+			const { db } = await import("$lib/server/db")
+			const { foldAudioCppManagedBaseUrl } = await import(
+				"$lib/server/audiocpp/managedEndpoint"
+			)
+			await foldAudioCppManagedBaseUrl(db)
+			// The managed row's model rows follow its enabled packages; a pub
+			// that enabled one before this re-sync existed heals here.
+			const { resyncManagedAudioCpp } = await import("$lib/server/audiocpp/resync")
+			await resyncManagedAudioCpp(db)
+		},
+		shutdown: () => audiocpp.stopAudioCpp()
 	})
 }

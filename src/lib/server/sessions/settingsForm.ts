@@ -41,7 +41,8 @@
  * the address in it: what the asker cannot see or may not change is refused
  * by construction, in a sentence, never by a second copy of the rules.
  */
-import { and, eq, inArray } from "drizzle-orm"
+import { and, eq, inArray, isNull } from "drizzle-orm"
+import { NARRATOR_CADENCE_FIELD_KEY, narratorCadenceKey } from "$lib/shared/sessions/narratorCadence"
 import {
 	cadenceClock,
 	coreCadences,
@@ -51,6 +52,8 @@ import {
 	i18nText,
 	isModelPlumbing,
 	isSettingDecision,
+	jsonFieldByteCap,
+	jsonFieldFindings,
 	registrationKeyOf,
 	resolveExposure,
 	sessionEvents,
@@ -58,10 +61,17 @@ import {
 	type EffectiveRegistration,
 	type FieldDecl,
 	type RegistrationDecl,
+	undescribedSettingParts,
 	type SettingValue
 } from "@serene-pub/sdk"
 import * as schema from "$lib/server/db/schema"
 import { registrationScopeWhere } from "$lib/server/pipelines/registrations/rows"
+import {
+	SPEECH_FIELD_KEYS,
+	parseSpeechEnvoyFieldKey,
+	speechEnvoyFieldKey,
+	readEnvoySpeech
+} from "$lib/shared/sessions/speechSettings"
 import { checkSessionAccess } from "$lib/server/utils/sessionAccess"
 
 type Form = Sockets.Sessions.SettingsForm.Response
@@ -121,7 +131,7 @@ const humanize = (key: string) =>
 	key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[-_]/g, " ").replace(/^./, (c) => c.toUpperCase())
 
 /** A FieldDecl's control, members and bounds, as the form carries them. */
-function controlOf(decl: FieldDecl): Pick<Field, "control" | "members" | "min" | "max"> {
+function controlOf(decl: FieldDecl): Pick<Field, "control" | "members" | "min" | "max" | "maxBytes" | "jsonSchema"> {
 	const d = decl as FieldDecl & { of?: readonly string[]; members?: ReadonlyArray<{ key: string; label?: unknown; description?: unknown }>; list?: boolean }
 	const members = d.members?.length
 		? d.members.map((m) => ({
@@ -151,13 +161,20 @@ function controlOf(decl: FieldDecl): Pick<Field, "control" | "members" | "min" |
 			return { control: "text" }
 		case "string[]":
 			return { control: "list", ...(members ? { members } : {}) }
+		case "json":
+			// The runtime clamps; the raw declaration is never carried (manifests are stored verbatim).
+			return {
+				control: "json",
+				maxBytes: jsonFieldByteCap(d),
+				...(d.jsonSchema ? { jsonSchema: d.jsonSchema as Record<string, unknown> } : {})
+			}
 		default:
 			return { control: "json" }
 	}
 }
 
 /** The value as its control takes it, or a refusal naming what it wants. */
-export function checkedValue(field: Pick<Field, "label" | "control" | "min" | "max" | "members">, value: unknown): unknown {
+export function checkedValue(field: Pick<Field, "label" | "control" | "min" | "max" | "members" | "maxBytes" | "jsonSchema">, value: unknown): unknown {
 	const say = (what: string) => new SettingRefusal(`${field.label} ${what}. Nothing was saved.`)
 	const bounded = (n: number) => {
 		if (field.min != null && n < field.min) throw say(`is at least ${field.min}`)
@@ -191,6 +208,15 @@ export function checkedValue(field: Pick<Field, "label" | "control" | "min" | "m
 				throw say(`takes only ${field.members.map((m) => m.label).join(", ")}`)
 			return value
 		case "json":
+			// The `json` field type carries a cap: its value is checked as the SDK checks it.
+			if (field.maxBytes != null) {
+				const first = jsonFieldFindings(
+					{ type: "json", maxBytes: field.maxBytes, ...(field.jsonSchema ? { jsonSchema: field.jsonSchema } : {}) } as FieldDecl,
+					value
+				)[0]
+				if (first) throw new SettingRefusal(`${field.label}: ${first.message.replace(/^'value'/, "the value")}. Nothing was saved.`)
+				return value
+			}
 			try {
 				const json = JSON.stringify(value)
 				if (json === undefined || json.length > 20000) throw new Error()
@@ -244,13 +270,17 @@ async function genreGroup(
 			label: text((s.decl as { label?: unknown }).label, humanize(s.key)),
 			...(text((s.decl as { description?: unknown }).description) ? { description: text((s.decl as { description?: unknown }).description) } : {}),
 			...controlOf(s.decl),
-			value: s.value,
-			inherited: s.inherited,
+			// The narrator's cadence: an older boolean reads as its key (item 7, 2026-11-04).
+			value: s.key === NARRATOR_CADENCE_FIELD_KEY ? narratorCadenceKey(s.value) : s.value,
+			inherited: s.key === NARRATOR_CADENCE_FIELD_KEY ? narratorCadenceKey(s.inherited) : s.inherited,
 			source: sourceOf(s.from),
 			...(s.lockedAt ? { lockedAt: s.lockedAt as Layer } : {}),
 			reach: s.reach,
 			...(s.fixed ? { fixed: true as const } : {}),
-			...((s.decl as { advanced?: boolean }).advanced ? { advanced: true as const } : {}),
+			// ★E-2: a declared fold, or a user-facing field without purpose, group or reach (the compiler's warning).
+			...((s.decl as { advanced?: boolean }).advanced || undescribedSettingParts(s.decl).length
+				? { advanced: true as const }
+				: {}),
 			editable,
 			...(editable
 				? {}
@@ -294,6 +324,10 @@ async function genreGroup(
 		located.set(field.id, {
 			field,
 			changes: "genreFields",
+			check:
+				s.key === SPEECH_FIELD_KEYS.narratorVoice
+					? async (cdb, value) => (await import("$lib/server/speech/narratorVoiceCheck")).narratorVoiceRefusal(cdb, value)
+					: undefined,
 			write: async (tx, value) => {
 				// Merge over what is stored, read inside the write (a field saved
 				// from its widget meanwhile keeps its value).
@@ -316,6 +350,99 @@ async function genreGroup(
 	}
 	if (!fields.length) return null
 	return { kind: "genre", id: "genre", heading: genre?.name ?? "Genre", fields }
+}
+
+/* ── the Read aloud card's envoy voices ──────────────────────────────── */
+
+type SpeechEnvoyFieldKind = "voice" | "narrationVoice"
+const ENVOY_FIELD_KINDS: SpeechEnvoyFieldKind[] = ["voice", "narrationVoice"]
+const ENVOY_FIELD_WORDS: Record<SpeechEnvoyFieldKind, { label: string; control: "string" | "text" }> = {
+	voice: { label: "Voice", control: "string" },
+	narrationVoice: { label: "Narration voice", control: "string" }
+}
+
+/**
+ * 🚧 The keyed family `speechEnvoy*:<envoySlug>` (speech follow-ups B6): one
+ * pair of voice fields per envoy the session's genre declares. Not in the
+ * genre's declared fields, so the cascade never carries them — they are
+ * located here, behind the same who-may rule as the narrator voice (the
+ * narrator voice field must be one the asker may change), and checked as it
+ * is: a voice must be an enabled voicebank voice, prose is trimmed and
+ * capped, blank clears the key. The card lists the SEATED ones.
+ */
+async function envoyVoices(
+	db: Db,
+	session: typeof schema.sessions.$inferSelect,
+	located: Map<string, Located>
+): Promise<Sockets.Sessions.SettingsForm.SpeechEnvoy[]> {
+	if (!located.has(addressId({ kind: "genre", key: SPEECH_FIELD_KEYS.narratorVoice }))) return []
+	const { sessionDeclaredEnvoys } = await import("$lib/server/pipelines/entities/envoys")
+	const declared = await sessionDeclaredEnvoys(db, session.id)
+	if (!declared.length) return []
+	const seats = await db
+		.select({ envoySlug: schema.sessionCharacters.envoySlug })
+		.from(schema.sessionCharacters)
+		.where(and(eq(schema.sessionCharacters.sessionId, session.id), isNull(schema.sessionCharacters.removedAt)))
+	const seated = new Set(seats.map((r) => r.envoySlug).filter(Boolean))
+	const out: Sockets.Sessions.SettingsForm.SpeechEnvoy[] = []
+	for (const d of declared) {
+		const now = readEnvoySpeech(session.genreFields, d.slug)
+		const fields = {} as Record<SpeechEnvoyFieldKind, Field>
+		for (const kind of ENVOY_FIELD_KINDS) {
+			const key = speechEnvoyFieldKey(kind, d.slug)
+			const address: Address = { kind: "genre", key }
+			const field: Field = {
+				id: addressId(address),
+				address,
+				label: ENVOY_FIELD_WORDS[kind].label,
+				control: ENVOY_FIELD_WORDS[kind].control,
+				value: now[kind],
+				inherited: null,
+				source: now[kind] ? "session" : "declaration",
+				reach: "owner",
+				editable: true
+			}
+			fields[kind] = field
+			located.set(field.id, {
+				field,
+				changes: "genreFields",
+				check: async (cdb, value) => (await import("$lib/server/speech/narratorVoiceCheck")).narratorVoiceRefusal(cdb, value),
+				write: async (tx, value) => {
+					const v = typeof value === "string" ? value.trim() : ""
+					await tx.transaction(async (t: Db) => {
+						const [row] = await t
+							.select({ genreFields: schema.sessions.genreFields })
+							.from(schema.sessions)
+							.where(eq(schema.sessions.id, session.id))
+							.limit(1)
+						const next = { ...((row?.genreFields ?? {}) as Record<string, unknown>) }
+						if (v) next[key] = v
+						else delete next[key]
+						await t
+							.update(schema.sessions)
+							.set({ genreFields: next, updatedAt: new Date() })
+							.where(eq(schema.sessions.id, session.id))
+					})
+				}
+			})
+		}
+		if (seated.has(d.slug)) {
+			const { speakerFallbackVoice } = await import("$lib/server/speech/resolveVoice")
+			const { slug: _slug, ...fallback } = await speakerFallbackVoice(db, {
+				sessionId: session.id,
+				speakerRef: `envoy:${d.slug}`
+			})
+			out.push({
+				slug: d.slug,
+				name: text(d.name, d.slug),
+				...(d.image ? { avatar: d.image } : {}),
+				voice: fields.voice,
+				narrationVoice: fields.narrationVoice,
+				fallback
+			})
+		}
+	}
+	return out
 }
 
 /* ── a pipeline's group ──────────────────────────────────────────────── */
@@ -543,7 +670,12 @@ async function pipelineGroup(
 			...(r.lockedAt ? { lockedAt: r.lockedAt as Layer } : {}),
 			reach,
 			...(r.fixed ? { fixed: true as const } : {}),
-			...(!d.quick && !exposed && !fdecl?.reach ? { advanced: true as const } : {}),
+			// ★E-2: also a user-facing field with no sentence of purpose. A pipeline field's group is its step, always
+			// given, and its reach is the rule beside it, so only `description` is asked of the predicate here.
+			...((!d.quick && !exposed && !fdecl?.reach) ||
+			undescribedSettingParts({ description: d.description, group: "step", reach }, { reach: false }).length
+				? { advanced: true as const }
+				: {}),
 			editable,
 			...(editable
 				? {}
@@ -988,6 +1120,8 @@ async function build(db: Db, sessionId: number, viewer: SettingsViewer): Promise
 	const groups: Group[] = []
 	const genre = await genreGroup(db, session, viewer, located)
 	if (genre) groups.push(genre)
+	const speechEnvoys = await envoyVoices(db, session, located)
+	const speechNarrator = await narratorLine(db, located, viewer)
 
 	const { effectiveRegistrations } = await import("$lib/server/pipelines/registrations/resolve")
 	const resolved = await effectiveRegistrations(db, sessionId)
@@ -1032,7 +1166,37 @@ async function build(db: Db, sessionId: number, viewer: SettingsViewer): Promise
 		const routines = await routinesGroup(db, session, viewer, resolved, names, located)
 		if (routines) groups.push(routines)
 	}
-	return { form: { sessionId, viewer: viewer.isAdmin ? "admin" : "owner", groups }, located }
+	return {
+		form: {
+			sessionId,
+			viewer: viewer.isAdmin ? "admin" : "owner",
+			groups,
+			...(speechEnvoys.length ? { speechEnvoys } : {}),
+			...(speechNarrator ? { speechNarrator } : {})
+		},
+		located
+	}
+}
+
+/**
+ * What the narrator gets when the session's override is blank: the speaking
+ * loadout's default voice, else its first usable entry. Present whenever the
+ * narrator voice field is shown (editable or not); `loadoutName` only for
+ * administrators — members never see loadouts.
+ */
+async function narratorLine(
+	db: Db,
+	located: Map<string, Located>,
+	viewer: SettingsViewer
+): Promise<{ voiceName: string | null; loadoutName?: string } | null> {
+	if (!located.has(addressId({ kind: "genre", key: SPEECH_FIELD_KEYS.narratorVoice }))) return null
+	const { speakingLoadout, loadoutVoiceRows } = await import("$lib/server/speech/voicebank")
+	const loadout = await speakingLoadout(db)
+	if (!loadout) return { voiceName: null }
+	const rows = await loadoutVoiceRows(db, loadout.loadoutId)
+	const usable = rows.filter((r) => r.enabled)
+	const chosen = usable.find((r) => r.id === loadout.defaultVoiceId) ?? usable[0] ?? null
+	return { voiceName: chosen?.name ?? null, ...(viewer.isAdmin ? { loadoutName: loadout.name } : {}) }
 }
 
 /** Every field of a form — each group's, and each routine's. */
@@ -1067,6 +1231,10 @@ export async function updateSetting(
 	const id = addressId(address)
 	const at = located.get(id)
 	if (!at) {
+		// 🚧 The envoy family: a slug the genre does not declare is said so.
+		const envoyKey = address.kind === "genre" ? parseSpeechEnvoyFieldKey(address.key) : null
+		if (envoyKey && located.has(addressId({ kind: "genre", key: SPEECH_FIELD_KEYS.narratorVoice })))
+			throw new SettingRefusal(`No envoy named "${envoyKey.envoySlug}" speaks in this session. Nothing was saved.`)
 		const shown = formFields(form).find((f) => f.id === id)
 		if (shown && !shown.editable) throw new SettingRefusal(`${shown.label}: ${shown.readOnlyReason ?? "it cannot be changed here."} Nothing was saved.`)
 		throw new SettingRefusal(

@@ -47,14 +47,13 @@ import {
 	type ParticipantRef,
 	type StatusText
 } from "@serene-pub/sdk"
-import { eq } from "drizzle-orm"
 import * as schema from "$lib/server/db/schema"
 import { broadcastToSessionUsers } from "$lib/server/sockets/utils/broadcastHelpers"
 import { setStatus as setRegistryStatus } from "$lib/server/pipelines/runtime/runRegistry"
 import type { RunKind } from "$lib/server/pipelines/runtime/runRegistry"
 import type { LiveRow, SessionIo } from "$lib/server/pipelines/runtime/liveRow"
 import type { LLMQueueStatus } from "$lib/server/utils/llmQueue"
-import { resolveCharacterName } from "$lib/shared/utils/resolveCharacterName"
+import { memberShownName } from "$lib/shared/lorebooks/memberIdentity"
 import { i18nTextIn } from "$lib/shared/i18n/i18nText"
 
 // db is the global Db — see db/types.d.ts
@@ -107,6 +106,14 @@ export interface RunStatusFrame {
 	reply?: { channel: string }
 	/** 🚧 What the run is FOR — the registry's own kind (`RunHandle.kind`), the fact the busy door reads. On every frame, the end frame too (sprint 2, G3). */
 	kind: RunKind
+	/**
+	 * 🚧 A **line-bound run** (`RunHandle.lineBound`, owner ruling
+	 * 2026-10-29): speaking one line, shown on that line only. Such a frame
+	 * never carries `reply`; the page keeps the run in `liveRunIds` (its
+	 * line's *Speaking…*) and leaves it out of the waiting row, the turn
+	 * line, the composer's Stop and the session list. On every frame.
+	 */
+	lineBound?: true
 }
 
 export interface StatusRelayOptions {
@@ -142,6 +149,8 @@ export interface StatusRelayOptions {
 	reply?: { channel: string }
 	/** 🚧 The run's kind, said on every frame (sprint 2, G3). */
 	kind: RunKind
+	/** 🚧 The run is line-bound (`RunStatusFrame.lineBound`); then `reply` is ignored. */
+	lineBound?: boolean
 }
 
 export interface StatusRelay {
@@ -188,27 +197,55 @@ export async function speakerDisplayName(
 	}
 ): Promise<string | undefined> {
 	if (opts.sideCharacterName?.trim()) return opts.sideCharacterName.trim()
-	const ref = opts.speaker
+	const speaker = opts.speaker
 	// `null` and `undefined` are NOT the same "no speaker" (ruled
 	// 2026-09-16): `null` is a narrator turn, which does have a name to
 	// give — the session's configured narrator — while `undefined` is a
 	// run that never had a speaker port at all (`sessions:fireAction`,
 	// summarize, a scene). The latter falls out here rather than reaching
 	// the narrator branch below, so its status keeps `{speaker}` unfilled.
-	if (ref === undefined) return undefined
+	if (speaker === undefined) return undefined
+	// 🚧 A `seated-member:` ref (refs in accept it) is read in the card form
+	// the gate below knows; nobody seated as that member names nobody.
+	let ref = speaker
+	if (typeof ref === "string" && ref.startsWith("seated-member:")) {
+		const { storedSeatRef } = await import(
+			"$lib/server/state/seatRefs"
+		)
+		ref = ((await storedSeatRef(db, opts.sessionId, ref)) ??
+			"") as typeof ref
+		if (!ref) return undefined
+	}
+	// ⏳ (S4) With the member-form switch on the door answers member form
+	// (`seated-member:` / `player-seat:`): read it as the card its seat holds,
+	// the form the gate below knows.
+	if (
+		typeof ref === "string" &&
+		(ref.startsWith("seated-member:") || ref.startsWith("player-seat:"))
+	) {
+		const { memberFormOn } = await import("$lib/server/state/memberForm")
+		if (memberFormOn()) {
+			const { seatOf } = await import("$lib/server/sessions/seats")
+			const cardId = (await seatOf(db, opts.sessionId, ref))?.cardId
+			if (cardId == null) return undefined
+			ref = `character:${cardId}` as typeof ref
+		}
+	}
 	if (ref && isParticipantRef(ref)) {
 		if (ref.startsWith("character:")) {
 			const id = Number(ref.slice("character:".length))
 			if (Number.isFinite(id)) {
-				const [row] = await db
-					.select({
-						name: schema.characters.name,
-						nickname: schema.characters.nickname
-					})
-					.from(schema.characters)
-					.where(eq(schema.characters.id, id))
-					.limit(1)
-				if (row) return resolveCharacterName(row, "") || undefined
+				// The seat holding the card reads its member (own name
+				// or the card's); nobody seated reads the card's current version.
+				const { cardsNowAsSeatsRead } = await import(
+					"$lib/server/pipelines/prompt/seatCards"
+				)
+				const filled = (
+					await cardsNowAsSeatsRead(db, opts.sessionId, [id])
+				).get(id)
+				if (filled) {
+					return memberShownName(undefined, filled, "") || undefined
+				}
 			}
 			return undefined
 		}
@@ -268,6 +305,12 @@ export function createStatusRelay(opts: StatusRelayOptions): StatusRelay {
 	let queueShown = false
 	/** Whether the reasoning phase's status is the one showing. */
 	let reasoningShown = false
+	/** 🚧 Where the run shows, on every frame: on its line only, else a reply's channel when it is one. */
+	const placement: Pick<RunStatusFrame, "reply" | "lineBound"> = opts.lineBound
+		? { lineBound: true }
+		: opts.reply
+			? { reply: opts.reply }
+			: {}
 
 	/**
 	 * Memoized: resolved once for the whole run, on the first status that
@@ -324,7 +367,7 @@ export function createStatusRelay(opts: StatusRelayOptions): StatusRelay {
 				runId,
 				status: filled,
 				kind: opts.kind,
-				...(opts.reply ? { reply: opts.reply } : {})
+				...placement
 			} satisfies RunStatusFrame).catch(() => {})
 		try {
 			opts.onStatus?.(nodeKey, filled)
@@ -349,7 +392,7 @@ export function createStatusRelay(opts: StatusRelayOptions): StatusRelay {
 					runId,
 					status: null,
 					kind: opts.kind,
-					...(opts.reply ? { reply: opts.reply } : {})
+					...placement
 				} satisfies RunStatusFrame).catch(() => {})
 		})
 

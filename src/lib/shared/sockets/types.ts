@@ -17,6 +17,7 @@ import type {
 } from "$lib/shared/entries/types"
 import type { MediaFrame } from "$lib/shared/media/frame"
 import type { ModelFacts } from "$lib/shared/connections/modelFacts"
+import type { MachineHardware as MachineHardwareShape } from "$lib/shared/connections/machineHardware"
 import type {
 	I18n as SdkI18n,
 	StoryCalendar as SdkStoryCalendar,
@@ -25,6 +26,7 @@ import type {
 } from "@serene-pub/sdk"
 import type { SpriteSetView } from "$lib/shared/sprites"
 import type { CharacterLikenessInput } from "$lib/shared/characters/likeness"
+import type { CharacterCreatorNotes } from "$lib/shared/characters/profile"
 import type { LoreWriteMode } from "$lib/shared/lorebooks/loreWriteMode"
 import type {
 	GenreRulesOffer,
@@ -163,6 +165,23 @@ declare global {
 
 		// Characters namespace - using Params/Ack pattern
 		namespace Characters {
+			/** A card version as the version picker lists it. */
+			interface CardVersionSummary {
+				id: number
+				number: number
+				label: string | null
+			}
+			/**
+			 * 🚧 A cast member that stays on an older card version after a Save
+			 * as new version.
+			 */
+			interface StayingMember {
+				castMemberId: number
+				lorebookId: number
+				name: string
+				cardVersionId: number
+				label: string | null
+			}
 			namespace List {
 				interface Params {}
 				interface Response {
@@ -186,8 +205,16 @@ declare global {
 			namespace Get {
 				interface Params {
 					id: number
+					/** The card version to show; absent: the current one. */
+					cardVersionId?: number
 				}
 				interface Response {
+					/** The card version shown. */
+					cardVersionId?: number
+					/** The card's current card version: the highest number. */
+					currentCardVersionId?: number
+					/** Every card version, by number ascending. */
+					cardVersions?: CardVersionSummary[]
 					// The vector and its bookkeeping are deliberately
 					// excluded — see the `columns` restriction in
 					// charactersGet (characters.ts) — unlike Create/Update
@@ -250,9 +277,21 @@ declare global {
 					avatarFile?: Buffer | null
 					/** 🚧 As on `Create.Params`. Absent: untouched; `null`: removed. */
 					likeness?: CharacterLikenessInput | null
+					/** The card version to write; absent: the current one. */
+					cardVersionId?: number
+					/** Write a new card version instead; `label` absent: the suggested one. */
+					saveAsNewVersion?: { label?: string | null }
 				}
 				interface Response {
 					character: WithAvatarMedia<SelectCharacter>
+					/** The card version shown (or written). */
+					cardVersionId: number
+					/** The card's current card version: the highest number. */
+					currentCardVersionId: number
+					/** Every card version, by number ascending. */
+					cardVersions: CardVersionSummary[]
+					/** 🚧 Cast members that stay on an older card version. */
+					staying?: StayingMember[]
 				}
 			}
 			namespace Delete {
@@ -330,6 +369,10 @@ declare global {
 						 * Only this person can settle it, once.
 						 */
 						heldImportId: string
+						/** The card's current card version. */
+						currentVersion: CardVersionSummary
+						/** The label the file's card version is offered under. */
+						suggestedLabel: string | null
 					}
 					/**
 					 * Non-fatal problems during an otherwise successful
@@ -353,13 +396,18 @@ declare global {
 			}
 			namespace ImportResolve {
 				interface Params {
-					action: "overwrite" | "createNew"
+					/** ⏳ `overwrite` is read as `addVersion` until the client says it. */
+					action: "addVersion" | "createNew" | "overwrite"
+					/** The new card version's label; absent: the suggested one. */
+					label?: string | null
 					/** From ImportCard.Response.conflict. */
 					heldImportId: string
 					existingId: number
 				}
 				interface Response {
 					character: SelectCharacter
+					/** The card version the file was added as. Only on `addVersion`. */
+					cardVersionId?: number
 					book: HeldCardBook | null
 					/** See ImportCard.Response.warnings. */
 					warnings?: string[]
@@ -434,33 +482,51 @@ declare global {
 			}
 			namespace ListGallery {
 				interface Params {
-					characterId: number
+					/** The card whose it is; absent when `castMemberId` names a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; name this or `characterId`, never both. */
+					castMemberId?: number
 				}
 				interface Response {
 					images: Media[]
-					characterId: number
+					/** The card whose it is; absent for a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; absent for a card's. */
+					castMemberId?: number
 				}
 			}
 			namespace UploadGalleryImage {
 				interface Params {
-					characterId: number
+					/** The card whose it is; absent when `castMemberId` names a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; name this or `characterId`, never both. */
+					castMemberId?: number
 					imageFile: Buffer | Uint8Array
 					mimeType: string
 				}
 				interface Response {
 					success: boolean
 					media: Media
-					characterId: number
+					/** The card whose it is; absent for a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; absent for a card's. */
+					castMemberId?: number
 				}
 			}
 			namespace DeleteGalleryImage {
 				interface Params {
-					characterId: number
+					/** The card whose it is; absent when `castMemberId` names a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; name this or `characterId`, never both. */
+					castMemberId?: number
 					mediaId: number
 				}
 				interface Response {
 					success: boolean
-					characterId: number
+					/** The card whose it was; absent for a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose it was; absent for a card's. */
+					castMemberId?: number
 				}
 			}
 			namespace SetAvatar {
@@ -474,13 +540,15 @@ declare global {
 			}
 			namespace ReorderGallery {
 				interface Params {
-					characterId: number
+					/** The card whose it is; absent when `castMemberId` names a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; name this or `characterId`, never both. */
+					castMemberId?: number
 					/** Full gallery in the desired new order (ids as returned by ListGallery). */
 					mediaIds: number[]
 				}
-				interface Response {
-					images: Media[]
-				}
+				/** The gallery as it now stands, keyed as `ListGallery` is. */
+				type Response = ListGallery.Response
 			}
 			/*
 			 * Sprites (DESIGN-sprites §7). Every reply and cascade carries
@@ -490,24 +558,38 @@ declare global {
 			 */
 			namespace ListSprites {
 				interface Params {
-					characterId: number
+					/** The card whose it is; absent when `castMemberId` names a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; name this or `characterId`, never both. */
+					castMemberId?: number
 				}
 				interface Response {
-					characterId: number
+					/** The card whose it is; absent for a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; absent for a card's. */
+					castMemberId?: number
 					/** Default set first. */
 					sets: SpriteSetView[]
+					/** 🚧 A cast member's card's sets, sent while the card draws the member — the member has no sprites with pictures of its own; read-only here. */
+					fromCard?: { characterId: number; sets: SpriteSetView[] }
 				}
 			}
 			namespace CreateSpriteSet {
 				interface Params {
-					characterId: number
+					/** The card whose it is; absent when `castMemberId` names a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; name this or `characterId`, never both. */
+					castMemberId?: number
 					name: string
 				}
 				type Response = ListSprites.Response
 			}
 			namespace UpdateSpriteSet {
 				interface Params {
-					characterId: number
+					/** The card whose it is; absent when `castMemberId` names a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; name this or `characterId`, never both. */
+					castMemberId?: number
 					setId: number
 					/** A new name. ⚠ Strands cast amendments naming the old one. */
 					name?: string
@@ -518,14 +600,20 @@ declare global {
 			}
 			namespace DeleteSpriteSet {
 				interface Params {
-					characterId: number
+					/** The card whose it is; absent when `castMemberId` names a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; name this or `characterId`, never both. */
+					castMemberId?: number
 					setId: number
 				}
 				type Response = ListSprites.Response
 			}
 			namespace UploadSprite {
 				interface Params {
-					characterId: number
+					/** The card whose it is; absent when `castMemberId` names a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; name this or `characterId`, never both. */
+					castMemberId?: number
 					/** Omitted = the default set (created when missing). */
 					setId?: number
 					label: string
@@ -536,14 +624,20 @@ declare global {
 			}
 			namespace AddStandardSprites {
 				interface Params {
-					characterId: number
+					/** The card whose it is; absent when `castMemberId` names a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; name this or `characterId`, never both. */
+					castMemberId?: number
 					setId?: number
 				}
 				type Response = ListSprites.Response & { added: number }
 			}
 			namespace UpdateSprite {
 				interface Params {
-					characterId: number
+					/** The card whose it is; absent when `castMemberId` names a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; name this or `characterId`, never both. */
+					castMemberId?: number
 					spriteId: number
 					/** Move to another sprite label. */
 					label?: string
@@ -554,7 +648,10 @@ declare global {
 			}
 			namespace DeleteSprite {
 				interface Params {
-					characterId: number
+					/** The card whose it is; absent when `castMemberId` names a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; name this or `characterId`, never both. */
+					castMemberId?: number
 					spriteId: number
 				}
 				type Response = ListSprites.Response
@@ -566,12 +663,18 @@ declare global {
 			 */
 			namespace TestSprite {
 				interface Params {
-					characterId: number
+					/** The card whose it is; absent when `castMemberId` names a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; name this or `characterId`, never both. */
+					castMemberId?: number
 					setId?: number
 					text: string
 				}
 				interface Response {
-					characterId: number
+					/** The card whose it is; absent for a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; absent for a card's. */
+					castMemberId?: number
 					text: string
 					pick: {
 						set: string
@@ -584,7 +687,8 @@ declare global {
 			}
 			/*
 			 * 🚧 Fill empty sprites (DESIGN-image-generation §6.3; I5). The
-			 * card's owner or an admin. `previewSpriteFill` answers the form:
+			 * card's owner or an admin; for a cast member's own sets
+			 * (`castMemberId`), whoever may edit its lorebook. `previewSpriteFill` answers the form:
 			 * the labels it would draw (empty sprites by default), the cost
 			 * line and the notices the picture step raises before a run.
 			 * `fillSprites` starts the run and acks at once; the run reports
@@ -592,13 +696,19 @@ declare global {
 			 */
 			namespace PreviewSpriteFill {
 				interface Params {
-					characterId: number
+					/** The card whose it is; absent when `castMemberId` names a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; name this or `characterId`, never both. */
+					castMemberId?: number
 					setId?: number
 					/** Omitted or empty = every empty sprite in the set. */
 					labels?: string[]
 				}
 				interface Response {
-					characterId: number
+					/** The card whose it is; absent for a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; absent for a card's. */
+					castMemberId?: number
 					setId: number | null
 					setName: string
 					labels: string[]
@@ -617,12 +727,16 @@ declare global {
 			 * 🚧 **Re-express from neutral** (DESIGN-image-generation §6.3):
 			 * redraw the set's neutral sprite as `label` with the Sprites
 			 * loadout's pair — only when its sheet says `expressions`. The
-			 * card's owner or an admin. Answers with the whole sprite list,
+			 * card's owner or an admin (a cast member: whoever may edit its
+			 * lorebook). Answers with the whole sprite list,
 			 * like every sprite write.
 			 */
 			namespace ExpressSprite {
 				interface Params {
-					characterId: number
+					/** The card whose it is; absent when `castMemberId` names a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; name this or `characterId`, never both. */
+					castMemberId?: number
 					/** Omitted = the default set. */
 					setId?: number
 					label: string
@@ -636,7 +750,10 @@ declare global {
 			}
 			namespace FillSprites {
 				interface Params {
-					characterId: number
+					/** The card whose it is; absent when `castMemberId` names a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; name this or `characterId`, never both. */
+					castMemberId?: number
 					setId?: number
 					/** Omitted or empty = every empty sprite in the set. */
 					labels?: string[]
@@ -644,19 +761,27 @@ declare global {
 					runId?: string
 				}
 				interface Response {
-					characterId: number
+					/** The card whose it is; absent for a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; absent for a card's. */
+					castMemberId?: number
 					runId: string
 					error?: string
 				}
 			}
 			namespace SpriteFill {
 				interface Progress {
-					characterId: number
+					/** The card whose it is; absent for a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; absent for a card's. */
+					castMemberId?: number
 					runId: string
 					phase: "drawing" | "cutting" | "attaching" | "done" | "failed"
 					labels: string[]
 					setId: number | null
 					status?: unknown
+					/** The backend's own line when it has one — *In the Horde's queue at position 3* — plain text, shown when no `status` is. */
+					message?: string
 					percent?: number
 					drawn?: Array<{ label: string; uuid: string }>
 					attached?: Array<{ label: string; spriteId: number }>
@@ -666,7 +791,8 @@ declare global {
 			}
 			/*
 			 * 🚧 Generate portrait (DESIGN-image-generation §6.2; I8). The
-			 * card's owner or an admin. `previewPortrait` answers the dialog:
+			 * card's owner or an admin; for a cast member's own gallery
+			 * (`castMemberId`), whoever may edit its lorebook. `previewPortrait` answers the dialog:
 			 * the cost line and the notices the picture step raises before a
 			 * run. `generatePortrait` starts the run and acks at once; the run
 			 * reports on `characters:portrait` until `done` or `failed`, and
@@ -675,14 +801,20 @@ declare global {
 			 */
 			namespace PreviewPortrait {
 				interface Params {
-					characterId: number
+					/** The card whose it is; absent when `castMemberId` names a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; name this or `characterId`, never both. */
+					castMemberId?: number
 					/** 1–4; default 2. */
 					count?: number
 					/** Which prompt row: tag line or sentence. Default tags. */
 					style?: "tags" | "prose"
 				}
 				interface Response {
-					characterId: number
+					/** The card whose it is; absent for a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; absent for a card's. */
+					castMemberId?: number
 					count: number
 					style: "tags" | "prose"
 					pictures: number
@@ -698,25 +830,36 @@ declare global {
 			}
 			namespace GeneratePortrait {
 				interface Params {
-					characterId: number
+					/** The card whose it is; absent when `castMemberId` names a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; name this or `characterId`, never both. */
+					castMemberId?: number
 					count?: number
 					style?: "tags" | "prose"
 					/** The client's id for the run — what Stop sends back. */
 					runId?: string
 				}
 				interface Response {
-					characterId: number
+					/** The card whose it is; absent for a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; absent for a card's. */
+					castMemberId?: number
 					runId: string
 					error?: string
 				}
 			}
 			namespace Portrait {
 				interface Progress {
-					characterId: number
+					/** The card whose it is; absent for a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; absent for a card's. */
+					castMemberId?: number
 					runId: string
 					phase: "drawing" | "offering" | "done" | "failed"
 					count: number
 					status?: unknown
+					/** The backend's own line when it has one — *In the Horde's queue at position 3* — plain text, shown when no `status` is. */
+					message?: string
 					percent?: number
 					/** Pictures placed in the gallery, with the key each was drawn for. */
 					offered?: Array<{ mediaId: number; key: string | null }>
@@ -763,7 +906,10 @@ declare global {
 			}
 			namespace ReorderSprites {
 				interface Params {
-					characterId: number
+					/** The card whose it is; absent when `castMemberId` names a cast member's own. */
+					characterId?: number
+					/** 🚧 The cast member whose own it is; name this or `characterId`, never both. */
+					castMemberId?: number
 					setId: number
 					label: string
 					/** That label's variants in the new order. */
@@ -913,6 +1059,9 @@ declare global {
 				interface Params {
 					sort?: "newest" | "oldest" | "largest" | "smallest" | "name"
 					kind?: string
+					/** Spoken-audio rows (`meta.spoken`) are excluded unless asked
+					 *  for (speech S8). Default false. */
+					includeSpoken?: boolean
 				}
 				interface Response {
 					media: ManagedMedia[]
@@ -1005,6 +1154,40 @@ declare global {
 				interface Response {
 					variants: number
 					bytes: number
+					/** Spoken-audio files reclaimed with the derived forms. */
+					spokenFiles?: number
+				}
+			}
+			/** Spoken lines folded row (speech S8). No `sessionId`: pub-wide, admin
+			 *  only; with one: that session's owner or an admin. */
+			namespace SpokenSummary {
+				interface Params {
+					sessionId?: number
+				}
+				interface Response {
+					count: number
+					bytes: number
+					keep: "forever" | "archived" | number
+					sessionId: number | null
+				}
+			}
+			namespace ClearSpoken {
+				interface Params {
+					sessionId?: number
+				}
+				interface Response {
+					cleared: number
+					bytes: number
+					sessionId: number | null
+				}
+			}
+			/** Admin only: the pub setting `speech.keepSpokenAudio`. */
+			namespace SetKeepSpokenAudio {
+				interface Params {
+					keep: "forever" | "archived" | number
+				}
+				interface Response {
+					keep: "forever" | "archived" | number
 				}
 			}
 			namespace CullOriginals {
@@ -1096,6 +1279,24 @@ declare global {
 				 * live on the genre hub `genreId` names.
 				 */
 				swaps?: { total: number; off: number; genreId: string | null }
+				/** 🚧 (M2c) The lorebooks it provides (`provides.lorebooks`), each with where it stands. Absent when it provides none. */
+				providedBooks?: ProvidedBook[]
+			}
+			/** 🚧 (M2c) One provided book on the plugin page. */
+			interface ProvidedBook {
+				slug: string
+				/** The book's name once imported, else its slug. */
+				name: string
+				/** The version the book is at (the plugin's, while it waits). */
+				version: string
+				/** Null until imported. */
+				lorebookId: number | null
+				/** 🚧 (M2e) An administrator switched it off: hidden from lists, pickers and attach menus, the rows kept. A disabled book not yet imported reads `pending` + `disabled`. */
+				disabled: boolean
+				/** `imported` · `held` (a newer version not applied: Review/Off) · `pending` (will import at the next sync) · `waiting` (not switched on, or not approved) · 🚧 `failed` (the last import or upgrade failed; `why` says how). */
+				state: "imported" | "held" | "pending" | "waiting" | "failed"
+				/** The sentence that says why it is not simply imported. */
+				why?: string
 			}
 			/**
 			 * A plugin's settings surface (12 §6): the manifest's schema, the
@@ -1193,6 +1394,8 @@ declare global {
 					plugins: PluginRow[]
 					/** Whether the sandbox is actually on (SP_PLUGINS_ENABLED). */
 					sandboxEnabled: boolean
+					/** Whether SP_PLUGINS_ENABLED on this server decided `sandboxEnabled`. */
+					sandboxFromEnv: boolean
 				}
 			}
 			namespace Install {
@@ -1269,20 +1472,6 @@ declare global {
 					warnings: string[]
 				}
 			}
-			/**
-			 * The upload half of `installLocal`: a package zip, unzipped into
-			 * a temp folder under the data dir and installed from there.
-			 * Answers exactly what `installLocal` answers.
-			 */
-			namespace InstallPackage {
-				interface Params {
-					/** The uploaded file's name, for messages only. */
-					filename: string
-					/** The zip, base64; at most 8 MiB decoded. */
-					bytes: string
-				}
-				type Response = InstallLocal.Response
-			}
 			namespace SetEnabled {
 				interface Params {
 					pluginId: string
@@ -1290,6 +1479,25 @@ declare global {
 				}
 				interface Response {
 					plugins: PluginRow[]
+				}
+			}
+			/** 🚧 (M2e) `plugins:disableProvidedBook` / `plugins:enableProvidedBook` (admin only; `pluginId: "core"` names core's primers). */
+			namespace SetProvidedBookDisabled {
+				interface Params {
+					pluginId: string
+					slug: string
+				}
+				interface Response {
+					pluginId: string
+					slug: string
+					disabled: boolean
+					lorebookId: number | null
+				}
+				/** 🚧 (M2e) The refusal names the book it was about, so the admin page ties it to its row. */
+				interface ErrorResponse {
+					error: string
+					pluginId?: string
+					slug?: string
 				}
 			}
 			namespace SetBackend {
@@ -1313,6 +1521,12 @@ declare global {
 			namespace Uninstall {
 				interface Params {
 					pluginId: string
+					/** 🚧 (M2b) What to do with each person's own files; absent = keep. */
+					userFiles?: "keep" | "delete"
+					/** 🚧 (M2b) What to do with each person's saved data (the user annex); absent = keep. */
+					userAnnex?: "keep" | "delete"
+					/** 🚧 (M2c) What to do with the books (and their cards) the plugin provided; absent = keep. */
+					providedBooks?: "keep" | "delete"
 				}
 				interface Response {
 					plugins: PluginRow[]
@@ -1472,6 +1686,147 @@ declare global {
 					pluginId: string
 					settings?: PluginUserSettingsView | null
 					error?: string
+				}
+			}
+		}
+		/**
+		 * 🚧 Plugin actions (M0, SHAPES L12 Seams): a package's
+		 * `pluginActions`, run OUTSIDE a session for whoever is signed in —
+		 * `ctx.invoke(name, payload)` from a plugin page or frame, and the
+		 * host half of `file-pick` / `file-save`. Not under the restricted
+		 * `plugins:` prefix. ⚠ Not a session **action**.
+		 */
+		namespace PluginActions {
+			namespace Invoke {
+				interface Params {
+					pluginId: string
+					/** A key of the package's `pluginActions`. */
+					action: string
+					/**
+					 * What the handler receives: the invoke's payload, or
+					 * `{ name, mime, bytes }` for a picked file (`bytes` base64).
+					 */
+					input?: Record<string, unknown>
+					/** The asker's correlation id (`askerOf`), echoed on the reply and the refusal. */
+					requestId?: string
+					/**
+					 * 🚧 (M2e) Sent by an applet mount: the launcher (no `sessionId`) or an
+					 * applet genre's session view (its `sessionId`). The server never takes
+					 * it as the cause: it names which mount to check, and the server checks
+					 * that mount against its own data. Absent (a widget, a plugin page, file
+					 * pick/save): no frame-origin cause.
+					 */
+					fromApplet?: { pluginId: string; sessionId?: number }
+				}
+				interface Response {
+					pluginId: string
+					action: string
+					/** The handler's `out.main` — JSON, the shape the pipeline runtime reads. */
+					result: unknown
+					requestId?: string
+				}
+			}
+		}
+		/**
+		 * 🚧 (M2c) `appletApi:librarySessions` / `appletApi:updateSession`: the doors behind
+		 * an applet frame's `library-sessions` and `update-session` requests. The
+		 * person is the socket's; the sessions are those of the extension's OWN
+		 * genres that the person owns.
+		 */
+		namespace PluginSessions {
+			type ListRequest = import("@serene-pub/sdk").WidgetRequests["library-sessions"]["params"]
+			type ListResult = import("@serene-pub/sdk").WidgetRequests["library-sessions"]["result"]
+			type ListParams = ListRequest & { pluginId: string; requestId?: string }
+			interface ListResponse {
+				pluginId: string
+				result: ListResult
+				requestId?: string
+			}
+			type UpdateRequest = import("@serene-pub/sdk").WidgetRequests["update-session"]["params"]
+			type UpdateResult = import("@serene-pub/sdk").WidgetRequests["update-session"]["result"]
+			type UpdateParams = UpdateRequest & { pluginId: string; requestId?: string }
+			interface UpdateResponse {
+				pluginId: string
+				result: UpdateResult
+				requestId?: string
+			}
+		}
+		/**
+		 * 🚧 (M2b) `appletApi:userAnnex`: the door behind an applet frame's
+		 * `user-annex` request. The person is the socket's signed-in user, never a
+		 * param. The request is the SDK's `user-annex` request params.
+		 */
+		namespace PluginUserAnnex {
+			type Request = import("@serene-pub/sdk").WidgetRequests["user-annex"]["params"]
+			type Result = import("@serene-pub/sdk").WidgetRequests["user-annex"]["result"]
+			type Params = Request & {
+				pluginId: string
+				/** The asker's correlation id (`askerOf`), echoed on the reply and the refusal. */
+				requestId?: string
+			}
+			interface Response {
+				pluginId: string
+				result: Result
+				requestId?: string
+			}
+		}
+		/**
+		 * 🚧 (M2b) The applet library doors (`sockets/appletLibrary.ts`): the
+		 * server halves of `library-characters`, `update-character` and
+		 * `library-lorebooks`. The person is the socket's, never a param.
+		 */
+		namespace AppletLibrary {
+			type Req<K extends keyof import("@serene-pub/sdk").WidgetRequests> =
+				import("@serene-pub/sdk").WidgetRequests[K]
+			type Asker = {
+				pluginId: string
+				/** The asker's correlation id, echoed on the reply and the refusal. */
+				requestId?: string
+			}
+			namespace Characters {
+				type Params = Req<"library-characters">["params"] & Asker
+				interface Response {
+					pluginId: string
+					result: Req<"library-characters">["result"]
+					requestId?: string
+				}
+			}
+			namespace UpdateCharacter {
+				type Params = Req<"update-character">["params"] & Asker
+				interface Response {
+					pluginId: string
+					result: Req<"update-character">["result"]
+					requestId?: string
+				}
+			}
+			namespace Lorebooks {
+				type Params = Req<"library-lorebooks">["params"] & Asker
+				interface Response {
+					pluginId: string
+					result: Req<"library-lorebooks">["result"]
+					requestId?: string
+				}
+			}
+		}
+		/**
+		 * 🚧 A plugin's string catalog for one language (M0, SHAPES L5):
+		 * the package's `lang/<locale>.json`, best match for `language`, so a
+		 * frame or component's `ctx.t` reads the plugin's own words first.
+		 */
+		namespace PluginCatalogs {
+			namespace Get {
+				interface Params {
+					pluginId: string
+					/** The viewer's language (`en`, `pt`, `pt-br`). */
+					language: string
+				}
+				interface Response {
+					pluginId: string
+					language: string
+					/** The catalog file that answered (`pt-br`), or null when none did. */
+					locale: string | null
+					/** English source text → translation. Empty when no catalog matches. */
+					entries: Record<string, string>
 				}
 			}
 		}
@@ -1851,6 +2206,15 @@ declare global {
 				 * server lacks (*Missing nodes: …*). The row reads `unfinished`.
 				 */
 				problem?: string | null
+				/**
+				 * 🚧 OpenRouter only: the key's account has never bought credit
+				 * (`is_free_tier` on `GET /api/v1/key`), so only free (`:free`)
+				 * models answer, about 50 requests a day. Present only when true;
+				 * the endpoint's models are then listed free first. Read on a passing
+				 * test and on every sync of a saved OpenRouter connection
+				 * (`server/connections/openRouterKey.ts`).
+				 */
+				freeTier?: boolean
 			}
 			namespace Get {
 				interface Params {
@@ -1938,6 +2302,12 @@ declare global {
 					capability: string
 					id?: number | null
 					modelId?: number | null
+					/**
+					 * An image pair only: what happened to the loadout's sampling
+					 * preset — set from the model file, or left with a word on
+					 * where to switch it. The Use toast's second line.
+					 */
+					samplingNote?: string
 				}
 			}
 			/**
@@ -1997,6 +2367,27 @@ declare global {
 					// form shows it without having to re-read the row, which
 					// for an unsaved connection does not exist yet.
 					capabilities?: import("@serene-pub/sdk").CapabilitySet
+				}
+			}
+			/**
+			 * 🚧 `models:refreshSpeech` — re-run speech discovery for a saved
+			 * connection's speaking models (admin only). One model when `model`
+			 * is given, else every "tts" model.
+			 */
+			namespace RefreshSpeech {
+				interface Params {
+					connectionId: number
+					model?: string
+				}
+				interface Response {
+					connectionId: number
+					results: {
+						model: string
+						connectionModelId: number
+						speech: import("$lib/shared/connectionAdapters/speechFacts").SpeechFacts | null
+						error?: string
+					}[]
+					error?: string
 				}
 			}
 			namespace RefreshModels {
@@ -2238,7 +2629,9 @@ declare global {
 					 * capability layer). See `koboldcpp/visionProjector.ts`.
 					 */
 					visionProjector?: string | null
-				}
+									/** Voices and controls a speaking model declares (lane B, S1); absent when none stored. */
+					speech?: import("$lib/shared/connectionAdapters/speechFacts").SpeechFacts
+}
 				interface Response {
 					connectionId?: number
 					models?: ModelRow[]
@@ -2420,6 +2813,8 @@ declare global {
 					sizeMb?: number
 					/** transformers.js DataType the download requests (q8, fp32, …). */
 					dtype?: string
+					/** Variants the list publishes (a subset of fp32 | fp16 | q8 | q4); more than one opens the picker. */
+					dtypes?: string[]
 					dimensions?: number
 					maxInputTokens?: number
 					pooling?: "mean" | "cls" | "last_token"
@@ -2439,6 +2834,12 @@ declare global {
 					/** The CONNECTION. */
 					id: number
 					modelId: number
+					/**
+					 * Precision to fetch (fp32 | fp16 | q8 | q4). Accepted only when
+					 * the entry lists it in `catalog.dtypes` or it is the entry's
+					 * default; absent = the entry's default.
+					 */
+					dtype?: string
 				}
 				interface Response {
 					connectionId: number
@@ -2477,7 +2878,7 @@ declare global {
 					id: number
 					/** `org/name`. */
 					hubId: string
-					/** transformers.js DataType; unset = the export's default. */
+					/** fp32 | fp16 | q8 | q4 (`ONNX_DTYPES`); unset = the export's default. */
 					dtype?: string | null
 				}
 				interface Response extends Models.Response {
@@ -2598,6 +2999,13 @@ declare global {
 							at: string
 							message: string
 						} | null
+						/**
+						 * 🚧 Cast members whose upgrade lift left a note
+						 * (`LiftNoteV1` on their base): they read differently
+						 * since the upgrade, or their greetings became their own
+						 * list. The same count `admin:castLiftNotes` answers.
+						 */
+						castLiftCount: number
 					}
 					pipelines: {
 						published: number
@@ -2633,6 +3041,70 @@ declare global {
 			namespace OverviewStale {
 				interface Params {}
 				interface Response {}
+			}
+
+			/**
+			 * 🚧 `admin:castLiftNotes` — the cast members the character-versions
+			 * upgrade lifted with a note (`LiftNoteV1` on the base,
+			 * `written_by = 'lift'`), for Admin › Data and backups. Admin only;
+			 * restricted interest key.
+			 */
+			namespace CastLiftNotes {
+				interface Params {}
+				/** One place a lifted member reads differently from the old cast changes (`LiftDifference`). */
+				interface Difference {
+					/** The line; null is main. */
+					branchId: number | null
+					/** The line's name at lift time. */
+					line: string
+					at:
+						| {
+								kind: "date"
+								date: {
+									year: number
+									month: number | null
+									day: number | null
+								}
+						  }
+						| { kind: "before-first-change" }
+					/** The life point it reads at; null is every appearance. */
+					appearance: number | null
+					/** Character profile field names. */
+					fields: string[]
+				}
+				interface Member {
+					castMemberId: number
+					lorebookId: number
+					lorebookName: string
+					/** The member's shown name as main reads it now. */
+					memberName: string
+					note: {
+						v: 1
+						differences: Difference[]
+						/** One half of the greetings was retold, so the member got its own list. */
+						mixedGreetings?: true
+					}
+				}
+				interface Response {
+					/** `members.length`; the Overview's `data.castLiftCount`. */
+					count: number
+					members: Member[]
+				}
+			}
+
+			/**
+			 * 🚧 `admin:castLiftFollowGreetings` — **Follow the card's greetings**
+			 * for a member the upgrade gave its own greetings list (ruled
+			 * 2026-11-05, "Own list, noted"): the member's lift-written versions
+			 * that hold that list follow the card's greetings again, and the
+			 * note drops its greetings line. Answers with the refreshed list
+			 * (also emitted as `admin:castLiftNotes`). Admin only.
+			 */
+			namespace CastLiftFollowGreetings {
+				interface Params {
+					castMemberId: number
+				}
+				type Response = CastLiftNotes.Response
 			}
 
 			/**
@@ -2921,6 +3393,15 @@ declare global {
 				 * chipped *plugin off*. Absent for core's and the pub's.
 				 */
 				pluginOff?: boolean
+				/**
+				 * The **loadout voice** (a voicebank entry on this loadout) and the
+				 * **other speakers** pick (null = Auto), with the entries' names.
+				 * Null on every loadout that is not `text->audio`.
+				 */
+				defaultVoiceId: number | null
+				defaultVoiceName: string | null
+				otherSpeakersVoiceId: number | null
+				otherSpeakersVoiceName: string | null
 			}
 			namespace List {
 				interface Params {}
@@ -2984,6 +3465,12 @@ declare global {
 					 * replaces the stored one (null or `{}` = all at defaults).
 					 */
 					workflowValues?: Record<string, unknown> | null
+					/**
+					 * `text->audio` only: the loadout voice / the other-speakers pick
+					 * (null = Auto). Refused unless the voice is on this loadout.
+					 */
+					defaultVoiceId?: number | null
+					otherSpeakersVoiceId?: number | null
 				}
 				interface Response {
 					loadout: Summary
@@ -3081,6 +3568,95 @@ declare global {
 				interface Params {}
 				interface Response {
 					removed: boolean
+				}
+			}
+		}
+
+		/**
+		 * 🚧 `models:presence` — which runtimes already hold a model file (admin;
+		 * gated). Read from the runtimes' own directories and stores; no table.
+		 */
+		namespace Models {
+			namespace Presence {
+				/** One row the finder is showing. `key` is the caller's row key, echoed back. */
+				interface Query {
+					key: string
+					repo?: string
+					file?: string
+					bytes?: number
+					tag?: string
+					packageId?: string
+					dtype?: string
+				}
+				/** Exactly the client's `DestinationKind`. */
+				type Runtime = "koboldcpp" | "ollama" | "onnx" | "audiocpp"
+				interface Holder {
+					runtime: Runtime
+					/** The connection that serves from that place, when one exists. */
+					connectionId: number | null
+					/** KoboldCPP: "text" | "image"; Ollama: the connection's name; ONNX: the cache lane; audio.cpp: null. */
+					where: string | null
+					/** What matched, in the holder's own words (file name, tag, repo id, package id). */
+					match: string
+				}
+				interface Result {
+					key: string
+					holders: Holder[]
+				}
+				interface Params {
+					queries: Query[]
+				}
+				interface Response {
+					results: Result[]
+					error?: string
+				}
+			}
+
+			/**
+			 * 🚧 `models:machineHardware` — the graphics card and memory of the
+			 * computer the pub runs on (admin; gated). Detected once per boot and
+			 * cached; the finder proposes a build from it, the person's answer wins.
+			 */
+			namespace MachineHardware {
+				interface Params {}
+				interface Response {
+					/** null when the asker may not see it. */
+					hardware: MachineHardwareShape | null
+					error?: string
+				}
+			}
+
+			/**
+			 * 🚧 `models:hubCard` — one Hugging Face repo's card facts and its
+			 * GGUF file sizes, for the finder model page (admin; gated). Asked only
+			 * when the page opens; the card is cached a day by repo, read in
+			 * the same call as the quant lists' sibling sizes. Failures ride
+			 * the reply's own `error`.
+			 */
+			namespace HubCard {
+				interface Params {
+					/** "owner/name", as the Hub spells it. */
+					repo: string
+				}
+				/** Only the facts the Hub stated; an unknown one is absent. */
+				interface Card {
+					license?: string
+					languages?: string[]
+					contextLength?: number
+					baseModel?: string
+					downloads?: number
+					lastModified?: string
+				}
+				/** A `.gguf` sibling and its byte count, in the Hub's own field names. */
+				interface File {
+					rfilename: string
+					size?: number
+				}
+				interface Response {
+					repo: string
+					card?: Card
+					files?: File[]
+					error?: string
 				}
 			}
 		}
@@ -3523,6 +4099,17 @@ declare global {
 				 * Better with: an image model"). Sent by `sessionPresets:list`.
 				 */
 				recommendations?: Recommendations
+				/**
+				 * 🚧 The preset's variable layouts that name no layout now (its
+				 * package was removed, or the layout withdrawn): the run skips
+				 * each and the pub's layout renders. Computed beside
+				 * `staleBindings` (nothing stored), sent by `sessionPresets:list`
+				 * only; absent when none.
+				 */
+				danglingVariableLayouts?: Array<{
+					variableId: string
+					reference: string
+				}>
 			}
 			/** 🚧 R56: what a preset needs and what would make it better — see `PresetRow.recommendations`. */
 			interface Recommendations {
@@ -3530,6 +4117,8 @@ declare global {
 				betterWith: string[]
 				unserved: string[]
 				words: string
+				/** The unserved ones named in a sentence; empty when all are served. */
+				unservedWords: string
 			}
 			/** 🚧 One setting the start form asks (see `PresetRow.asks`). */
 			interface StartAsk {
@@ -3854,6 +4443,8 @@ declare global {
 					/** Only the session's owner changes them. */
 					canEdit: boolean
 					rulesOptions: RulesOptions
+					/** 🚧 "Update rules" (🚧 M0 L4): the session owner's offer; absent when there is none. */
+					upgrade?: { from: string; to: string; notes: string[] }
 				}
 				interface ErrorResponse {
 					error: string
@@ -4007,7 +4598,13 @@ declare global {
 					sessionId: number
 					request?: string
 					owner: {
-						kind: "session" | "session_cast" | "player_seat" | "session_location"
+						/** From the flip a character seat is `seated_member` (by cast member id) and a player seat `player_seat` (by seat id); ⏳ `session_cast` (by card id) is translated at the server's door until S5. */
+						kind:
+							| "session"
+							| "session_cast"
+							| "seated_member"
+							| "player_seat"
+							| "session_location"
 						id: number
 					}
 					slotId: string
@@ -4130,6 +4727,16 @@ declare global {
 							persona: Partial<SelectCharacter>
 						})[]
 						sessionTags?: { tag: SelectTag }[]
+						/** As `sessions:get`'s `castFaces` (s27 S2): the seat's cast member's face, by seated card id. */
+						castFaces?: Record<number, number>
+						/** As `sessions:get`'s `castNames` (s27 S2): the seat's cast member's names, by seated card id. */
+						castNames?: Record<
+							number,
+							{
+								ownName: string | null
+								ownNickname: string | null
+							}
+						>
 					})[]
 				}
 			}
@@ -4171,7 +4778,33 @@ declare global {
 					 * frame, the end frame too.
 					 */
 					kind: import("@serene-pub/sdk").RunKind
+					/**
+					 * 🚧 A line-bound run (speaking one line,
+					 * `RunStatusFrame.lineBound`): shown on that line only —
+					 * never a waiting row, the turn line, the composer's Stop
+					 * or the session list. Never carries `reply`.
+					 */
+					lineBound?: true
 				}
+			}
+			/**
+			 * 🚧 Server → client (M2a a6, 2026-10-31): the run a person's press
+			 * started (`sessions:fireAction`) has ended — whichever way: `ok`,
+			 * `halt`, `err` or `cancelled`. Broadcast to the session's users;
+			 * the session page hands it to its frames as the widget event
+			 * `run:ended` (`WidgetEvent`, SDK). `reason` is the sentence the
+			 * run's terminal frame showed (a halt's or an error's); absent on
+			 * `ok` and `cancelled`.
+			 */
+			namespace RunEnded {
+				interface Frame {
+					sessionId: number
+					runId: string
+					outcome: "ok" | "halt" | "err" | "cancelled"
+					reason?: string
+				}
+				interface Params {}
+				type Response = Frame
 			}
 			/**
 			 * Server → client: this session's list row moved — a message
@@ -4250,9 +4883,25 @@ declare global {
 								sessionMessages: SelectSessionMessage[]
 								sessionCharacters: (SelectSessionCharacter & {
 									character: WithAvatarMedia<SelectCharacter>
+									/** 🚧 Host-filled, seat-cast S3: the seat's ref — `seated-member:<castMemberId>` from the flip, ⏳ `character:<cardId>` before; match on it, never build it. */
+									ref?: string
+									/** 🚧 Host-filled, seat-cast S3: the member's active card on the timeline; match on it, never build it. */
+									cardId?: number | null
+									/** 🚧 Host-filled on a benched seat only (bench-L4b): any line of the session belongs to this seat; absent on a seat in play. */
+									hasLines?: boolean
+									/** 🚧 Host-filled on a benched seat only (bench-L4b): the seat's story ended; absent on a seat in play. */
+									fellInStory?: boolean
 								})[]
 								sessionPersonas: (SelectSessionPersona & {
 									persona: WithAvatarMedia<SelectCharacter>
+									/** 🚧 Host-filled, seat-cast S3: the seat's ref — `player-seat:<id>` from the flip; ⏳ `character:<cardId>` before for a carded seat; match on it, never build it. */
+									ref?: string
+									/** 🚧 Host-filled, seat-cast S3: the member's active card on the timeline, null for a card-less seat; match on it, never build it. */
+									cardId?: number | null
+									/** 🚧 Host-filled on a benched seat only (bench-L4b): any line of the session belongs to this seat; absent on a seat in play. */
+									hasLines?: boolean
+									/** 🚧 Host-filled on a benched seat only (bench-L4b): the seat's story ended; absent on a seat in play. */
+									fellInStory?: boolean
 								})[]
 								sessionTags?: { tag: { name: string } }[]
 								// sessionGuests table has no `id` column (composite PK of
@@ -4276,12 +4925,64 @@ declare global {
 								/**
 								 * The faces the session's cast members are drawn
 								 * with (PLAN-cast-retold-fields): seated card id →
-								 * `files.id`, for each seat whose card is a member
-								 * of the session's lorebook that retells its face
-								 * (`retold.face` with a `faceMediaId`). Absent
-								 * key = the card's own avatar.
+								 * `files.id`, for each seat whose cast member as
+								 * read (`memberAsRead`, s27 S2: wherever the member
+								 * lives, the session's own book included) retells
+								 * its face. Absent key = the card's own avatar.
+								 * ⏳ Keyed by the card the seat holds until S5 (card→seat
+								 * lookups on card columns stay until then, plan §34.1).
 								 */
 								castFaces?: Record<number, number>
+								/** 🚧 The name of the lorebook this session reads: its attached book's, else its own notes' label (★bk-lock-2). */
+								lorebookName?: string
+								/**
+								 * The names each seat's cast member is shown by, by
+								 * ⏳ seated card id (until S5), when they differ from the card's:
+								 * the member as read's name and nickname (`ownNickname`
+								 * `""` = no nickname), read through `memberShownName`.
+								 * Absent or `{}` = the cards' names stand.
+								 */
+								castNames?: Record<
+									number,
+									{
+										ownName: string | null
+										ownNickname: string | null
+									}
+								>
+								/** 🚧 Seats that hold no card, shown as their cast member (name, nickname, face), by cast member id — never by card id (plan §34.2). */
+								cardlessSeatShown?: Record<
+									number,
+									{
+										name: string
+										nickname: string | null
+										faceMediaId: number | null
+									}
+								>
+								/**
+								 * 🚧 The cast member's own sprite sets, by seated card
+								 * id (⏳ until S5; s27 S2): present only for a seat whose member
+								 * has sets of its own with an image
+								 * (`spriteSetsFrom === "member"`), in the shape the
+								 * card's `spriteSets` take; the client draws from
+								 * these instead of the card's. ⚠ Not
+								 * `spriteSetOverrides` (the session's pick of a set
+								 * by name).
+								 */
+								castSpriteSets?: Record<
+									number,
+									{
+										name: string
+										isDefault: boolean
+										sprites: {
+											label: string
+											position: number
+											file: {
+												uuid: string
+												rev: number
+											} | null
+										}[]
+									}[]
+								>
 								/**
 								 * 🚧 pr-6 (B §B-1): the settle line — `settledLineOf`: the
 								 * stored line or a done scene's close/selection. Null = nothing
@@ -4318,6 +5019,8 @@ declare global {
 					beforeId?: number
 					/** The current user's in-progress composer draft, if any */
 					userDraft?: string | null
+					/** 🚧 The genre's autoConvert moved this session's rules as it opened (🚧 M0 L4); on that one reply only. */
+					rulesetConverted?: { from: string; to: string }
 					/**
 					 * The requested session id — present on a not-found reply so
 					 * the interest scope can still be derived.
@@ -4381,6 +5084,10 @@ declare global {
 						swaps?: import("@serene-pub/sdk").StoredSwapContribution[]
 					}
 					characterIds: number[]
+					/**
+					 * 🚧 Card-less cast members of this session's lorebook to seat as characters (plan §34.2); the server checks each lives in the session's books.
+					 */
+					castMemberIds?: number[]
 					personaIds: number[]
 					characterPositions: Record<number, number>
 					tags?: string[]
@@ -4392,6 +5099,16 @@ declare global {
 					 * `session.lorebookId`.
 					 */
 					starterKit?: StarterKits.Ref
+					/** 🚧 How it starts (F5); absent is 'new'. */
+					mode?: import("@serene-pub/sdk").SessionCreationMode
+					/** The session it follows or branches — required for 'next-chapter' and 'branch'. */
+					from?: number
+					/**
+					 * 🚧 (M2c) Started from an extension's launcher: the server judges
+					 * the extension's grant, that the genre is its own and that the
+					 * prefilled genre fields are declared, before running today's path.
+					 */
+					fromApplet?: { pluginId: string }
 				}
 				interface Response {
 					session?: SelectSession
@@ -4437,6 +5154,22 @@ declare global {
 				interface Response {
 					sessionId: number
 					genreId: string
+					error?: string
+				}
+			}
+			/**
+			 * 🚧 Move a session's rules to the published version of their
+			 * ruleset (M0, lane T4). Owner-only; a refusal is `error`.
+			 */
+			namespace ConvertRuleset {
+				interface Params {
+					id: number
+					/** The ruleset version to move to (semver) — the document's published one. */
+					to: string
+				}
+				interface Response {
+					id: number
+					rulesetVersion?: string
 					error?: string
 				}
 			}
@@ -4795,8 +5528,31 @@ declare global {
 					 * only an `error` no card is showing: a press refused
 					 * before any run started has no `runId` (PLAN-less-confusing
 					 * D4, 2026-10-11).
+					 *
+					 * 🚧 M2a a6 (2026-10-31): on every answer a run stands behind —
+					 * a success too — so the asker can match the run's
+					 * `sessions:runEnded` and a frame can be answered with it.
 					 */
 					runId?: string
+					/**
+					 * 🚧 M2a a6: the pressed run HALTED — a step stopped it on
+					 * purpose (a refusal, nothing to write), as distinct from
+					 * an error (`error` alone) or a stop (`cancelled`). `reason`
+					 * is the run's own sentence, the one `error` carries beside it.
+					 */
+					halted?: true
+					/** 🚧 M2a a6: why the run halted (with `halted`) — the sentence its terminal frame showed. */
+					reason?: string
+					/**
+					 * 🚧 M2a a6: the `runId` this press's params named, echoed on
+					 * EVERY answer to it — a refusal before any run, a Stop, a
+					 * park and a success alike — so the asker matches its own
+					 * press exactly, even with two presses of one action in
+					 * flight. Absent when the press named none. ⚠ Not `runId`,
+					 * which says a run stood behind the answer (a refusal before
+					 * any run has none, and the page toasts only those).
+					 */
+					askedRunId?: string
 					/**
 					 * The run was stopped on request rather than failing.
 					 *
@@ -4960,6 +5716,10 @@ declare global {
 					control: "integer" | "number" | "boolean" | "enum" | "string" | "text" | "list" | "json"
 					min?: number
 					max?: number
+					/** A `json` field type's runtime byte cap (`jsonFieldByteCap`, never the raw declaration). */
+					maxBytes?: number
+					/** A `json` field type's JSON Schema subset, when declared. */
+					jsonSchema?: Record<string, unknown>
 					/** An enum's choices, in order. */
 					members?: { key: string; label: string; description?: string }[]
 					/** What the session runs with now. */
@@ -5007,11 +5767,42 @@ declare global {
 					fields: Field[]
 					routines?: Routine[]
 				}
+				/**
+				 * 🚧 One seated envoy's Read aloud settings (speech follow-ups
+				 * B6): the keyed family `speechEnvoy*:<slug>` drawn as two
+				 * fields the asker may change, written through
+				 * `sessions:updateSetting` like any genre field.
+				 */
+				interface SpeechEnvoy {
+					slug: string
+					name: string
+					/** The envoy's declared face (an http(s) or data:image URL), when it has one. */
+					avatar?: string
+					voice: Field
+					narrationVoice: Field
+					/** What this envoy gets while `voice` is blank (read-only; from the resolver). */
+					fallback: SpeechFallback
+				}
+				/** What a speaker with no voice of its own gets. */
+				interface SpeechFallback {
+					kind: "other-speakers" | "auto" | "narrator"
+					voiceName: string | null
+					reason?: "avoids-narrator" | "shared"
+				}
 				interface Response {
 					sessionId: number
 					/** Who the form was derived for. Absent with `error`. */
 					viewer?: "owner" | "admin"
 					groups: Group[]
+					/** 🚧 The Read aloud card's Envoy voices: the genre's seated envoys; absent when none or the asker may not change voices. */
+					speechEnvoys?: SpeechEnvoy[]
+					/**
+					 * The voice the narrator gets while the session's override is blank
+					 * (the speaking loadout's voice, else its first entry; null when none).
+					 * Present whenever the narrator voice field is shown. `loadoutName`
+					 * only for administrators.
+					 */
+					speechNarrator?: { voiceName: string | null; loadoutName?: string }
 					error?: string
 				}
 			}
@@ -5182,6 +5973,13 @@ declare global {
 					pluginId: string
 					src: string
 					title?: string
+					/**
+					 * 🚧 (m3-core) Present exactly when the genre is an applet genre whose
+					 * frame `appletMount` mounts: the plugin's effective applet keys and
+					 * storage keys, the launcher's grants (one source). The page adds them
+					 * to the session's own; not a frame's whole grant list.
+					 */
+					appletGrants?: string[]
 				}
 				/**
 				 * A mode-declared panel (21) as it crosses the wire: the SDK
@@ -5605,6 +6403,8 @@ declare global {
 						sessionId: number
 						/** The preset to copy; `null` is Start from scratch. */
 						layoutPresetId: number | null
+						/** Reset to genre default layout: clear this person's settings and style pins for the widgets the genre default places, before the copy (owner 2026-11-04, item 15). Ignored for any other preset. */
+						clearPlacedWidgets?: boolean
 					}
 					interface Response extends Get.Response {
 						ok: boolean
@@ -5988,6 +6788,8 @@ declare global {
 				interface Response {
 					sessionId: number
 					channel: string
+					/** The Back/Forward strip's state as it stands after this push (★H1, 2026-11-04): every road sends `sessions:actions` when a run ends, so the title's words stay fresh. Absent on the page's own request. */
+					rewind?: import("$lib/shared/sessions/rewind").RewindState
 					/**
 					 * Keyed by venue kind; every listed kind present, possibly
 					 * empty. `form` is never among them (U5d review, S1): an
@@ -6153,6 +6955,17 @@ declare global {
 						 * §28). Absent when the genre offers no choice (Chat).
 						 */
 						rules?: GenreRulesOffer
+						/**
+						 * 🚧 M2d: an applet genre's launcher card, present exactly when the launcher mounts.
+						 * `title` = the plugin's session-view frame title, else its name; `poster` / `logo` =
+						 * served `/plugin-assets/…` URLs; `blurb` = the resolved `en` text.
+						 */
+						appletCard?: {
+							title: string
+							poster?: string
+							logo?: string
+							blurb?: string
+						}
 						// Structurally mirrors SessionShape from @serene-pub/sdk,
 						// stated inline so the shared socket contract does not
 						// couple to the SDK package.
@@ -6171,6 +6984,18 @@ declare global {
 							lorebook?: "optional" | "required"
 							composer?: "text" | "none"
 							voice?: "character" | "narrator"
+							/** 🚧 A genre proposes full screen on a first open (SDK `SessionShape.fullscreen`). */
+							fullscreen?: "propose"
+							/** The plugin whose frame is the session view (SDK `SessionShape.view`). */
+							view?: string
+							/** 🚧 M2c: the genre's frame is also an applet, listed under Apps (SDK `SessionShape.applet`). */
+							applet?: true
+							/** 🚧 The creation mode the start form proposes (SDK `SessionShape.creationMode`, F5); never a lock. */
+							creationMode?: {
+								propose: import("@serene-pub/sdk").SessionCreationMode
+							}
+							/** 🚧 (SDK `SessionShape.castFromLorebook`, M3b): the attached lorebook seats its cast at create; `field` is the switch. */
+							castFromLorebook?: { field?: string }
 							/** SettingsSchema — the one field language. */
 							fields?: Record<string, any>
 						}
@@ -6181,6 +7006,10 @@ declare global {
 				interface Params {
 					session: Omit<UpdateSession, "metadata" | "drafts">
 					characterIds?: number[]
+					/**
+					 * 🚧 Card-less cast members of this session's lorebook to seat as characters (plan §34.2); the server checks each lives in the session's books.
+					 */
+					castMemberIds?: number[]
 					personaIds?: number[]
 					characterPositions?: Record<number, number>
 					tags?: string[]
@@ -6271,6 +7100,8 @@ declare global {
 			namespace Delete {
 				interface Params {
 					id: number
+					/** 🚧 (M2c) Confirmed from an extension's launcher: its grant and genre are judged first. */
+					fromApplet?: { pluginId: string }
 				}
 				interface Response {
 					success?: string
@@ -6314,6 +7145,17 @@ declare global {
 			 * pushed to each member, their own, when the annex changes.
 			 */
 			namespace Annex {
+				interface Params {
+					sessionId: number
+				}
+				interface Response {
+					sessionId: number
+					annex: Record<string, Record<string, unknown>>
+					error?: string
+				}
+			}
+			/** 🚧 The asker's view of the lorebook annex their session reads (M0): per owner, the values whose audience holds for them. */
+			namespace LorebookAnnex {
 				interface Params {
 					sessionId: number
 				}
@@ -6541,12 +7383,23 @@ declare global {
 			namespace SetCastSeatEnabled {
 				interface Params {
 					sessionId: number
-					characterId: number
+					/** The seat's card; name exactly one of `characterId` or `castMemberId`. */
+					characterId?: number
+					/** 🚧 The card-less seat's cast member; name exactly one of `characterId` or `castMemberId`. */
+					castMemberId?: number
+					/** 🚧 A player seat (`session_personas.id`), carded or card-less (owner 2026-11-10, benched seats); name exactly one of the three. */
+					playerSeatId?: number
+					/** false = benched, true = in play (brought back). */
 					enabled: boolean
 				}
 				interface Response {
 					sessionId: number
-					characterId: number
+					/** Echoes the seat asked for by card. */
+					characterId?: number
+					/** 🚧 Echoes the seat asked for by cast member. */
+					castMemberId?: number
+					/** 🚧 Echoes the player seat asked for. */
+					playerSeatId?: number
 					enabled: boolean
 					error?: string
 				}
@@ -6752,14 +7605,94 @@ declare global {
 					sessionId: number
 				}
 				interface Item {
+					/** Absent reads as `entry`. */
+					kind?: "entry" | "entry-change" | "link"
 					entryId: number
 					typeId: string
 					title: string
 					sourceMessageId: number | null
+					/** `entry-change` only: the held change's id; absent on a held paragraph. */
+					amendmentId?: number
+					/** `link` only: the link's id (Apply names it through `linkIds`). */
+					linkId?: number
+					/** 🚧 `entry-change` only: the own-book day carrying a held paragraph (Apply names it through `entryIds`). */
+					notesEntryId?: number
+					/** `entry-change` only: each field it changes. */
+					changes?: { field: string; label: string; before: unknown; after: unknown }[]
+					/** `entry-change` only: why Apply would not take it now; null when clean. */
+					conflict?: string | null
 				}
 				interface Response {
 					sessionId: number
 					items?: Item[]
+					/**
+					 * 🚧 The reader is the lorebook's owner: Apply and Take back are theirs. Every member of the
+					 * session reads the list; only this decides the buttons.
+					 */
+					mayApply?: boolean
+					/**
+					 * 🚧 The lorebook takes this session's changes by itself as scenes close (the write setting in
+					 * force for it is Full, the session's owner owns it, and the session is not a branch).
+					 */
+					appliesItself?: boolean
+					error?: string
+				}
+			}
+			/**
+			 * 🚧 What was applied to the lorebook from this session: one row per Apply, newest first. Every
+			 * member of the session reads it; only the lorebook's owner takes one back (`mayApply`).
+			 */
+			namespace AppliedBatches {
+				interface Params {
+					sessionId: number
+				}
+				interface Item {
+					/** `entry`: a new entry moved into the lorebook (its links with it); `entry-change`: a held change folded in. */
+					kind: "entry" | "entry-change" | "link"
+					entryId: number
+					title: string
+					/** `link` only: the applied link's id. */
+					linkId?: number
+					/** `entry-change` only: each field it changed. */
+					changes?: { field: string; label: string; before: unknown; after: unknown }[]
+				}
+				interface Batch {
+					/** The Apply's id (`lore_imprints.batch`) — what Take back names. */
+					batch: string
+					/** When it was applied (ISO). */
+					at: string
+					/** A person's press: who; null when it applied by itself. */
+					by: { userId: number; name: string } | null
+					/** Why it applied by itself; null for a press. */
+					automatic: "scene-close" | "scene-summary" | "close-out" | null
+					/** The scene that closed or whose summary was saved, when the cause names one. */
+					sceneId: number | null
+					/** How many changes it applied: new entries and held changes (links ride with their entries). */
+					count: number
+					items: Item[]
+				}
+				interface Response {
+					sessionId: number
+					batches?: Batch[]
+					/** As on `OverlayItems.Response`: the reader is the lorebook's owner. */
+					mayApply?: boolean
+					error?: string
+				}
+			}
+			/**
+			 * 🚧 Take back one Apply (`AppliedBatches.Batch.batch`), all or nothing. The lorebook's owner only.
+			 * A refusal is said in place, as `refused`, never as an error toast.
+			 */
+			namespace TakeBackApply {
+				interface Params {
+					sessionId: number
+					batch: string
+				}
+				interface Response {
+					sessionId: number
+					batch?: string
+					/** Why it could not be taken back, as a sentence; null when it was taken back. */
+					refused?: string | null
 					error?: string
 				}
 			}
@@ -6771,11 +7704,26 @@ declare global {
 				interface Params {
 					sessionId: number
 					entryIds?: number[] | null
+					/** Held changes to apply (`Item.amendmentId`). Both lists absent applies everything. */
+					amendmentIds?: number[] | null
+					/** Links to apply (`Item.linkId`). All lists absent applies everything. */
+					linkIds?: number[] | null
 				}
 				interface Response {
 					sessionId: number
 					lorebookId?: number
 					applied?: number[]
+					appliedChanges?: number[]
+					stillHeld?: { amendmentId: number; reason: string }[]
+					/** Links that moved into the lorebook. */
+					appliedLinks?: number[]
+					/** Lorebook days a held paragraph was merged into. */
+					mergedDays?: number[]
+					/** Links dropped because an end is gone or the link already exists. */
+					droppedLinks?: number[]
+					/** Held paragraphs not merged, with the reason. */
+					heldDays?: { notesEntryId: number; reason: string }[]
+					batch?: string | null
 					error?: string
 				}
 			}
@@ -6796,15 +7744,6 @@ declare global {
 					success?: boolean
 					session?: SelectSession
 					error?: string
-				}
-			}
-			namespace SetLorebook {
-				interface Params {
-					sessionId: number
-					lorebookId: number | null
-				}
-				interface Response {
-					session: SelectSession
 				}
 			}
 			/**
@@ -6841,21 +7780,18 @@ declare global {
 				}
 			}
 			/**
-			 * 🚧 pr-6 (B §B-4): **Clone with changes and attach** — the attached
-			 * book copied with the own book's changes written in, read by the
-			 * session in place of the original (R-p).
+			 * 🚧 **Merge ‹book› into these notes** (★B-2): the attached book copied into
+			 * the session's own notes, which the session then reads alone.
 			 */
-			namespace CloneWithChanges {
+			namespace FoldInParent {
 				interface Params {
+					/** The session whose attached book is merged in. */
 					sessionId: number
-					/** The copy's name; absent: "<book> (with <session>'s notes)". */
-					name?: string | null
 				}
 				interface Response {
 					sessionId: number
-					lorebookId?: number
-					name?: string
-					error?: string
+					/** The session's notes, which it now reads alone. */
+					lorebookId: number
 				}
 			}
 			/** 🚧 pr-6 (B §B-5, R-k): the owner archives the session — read-only until unarchived. */
@@ -7163,7 +8099,7 @@ declare global {
 			type Ref = { primerId: string } | { lorebookId: number }
 			/** One kit as the pickers show it. */
 			interface Card {
-				/** `primer:<primer id>` or `book:<lorebook id>` — what `starterKits:clone` takes. */
+				/** `book:<lorebook id>`, or `primer:<primer id>` for a primer with no row yet — what `starterKits:clone` takes. */
 				id: string
 				/** Core's catalogue, a plugin's, or one of the pub's admins. */
 				source: "core" | "plugin" | "admin"
@@ -7177,10 +8113,15 @@ declare global {
 				ownerName?: string
 				/** The asker made it, and edits it in place. Admin kits only. */
 				mine?: boolean
+				/** A primer imported as an immutable row: its owner (`core` or a plugin id), its slug, and whether an administrator switched it off. Absent on admin kits and on a primer with no row yet. */
+				provided?: { pluginId: string; slug: string; disabled: boolean }
 			}
 			/** `starterKits:list` — every signed-in person. */
 			namespace List {
-				interface Params {}
+				interface Params {
+					/** Admins only (ignored for anyone else): also list the provided rows an administrator disabled. */
+					includeDisabled?: boolean
+				}
 				interface Response {
 					/** Shipped kits first, then admin kits by name. */
 					kits: Card[]
@@ -7367,12 +8308,22 @@ declare global {
 						isSharedWithMe?: boolean
 						/** The sharer's display name (else username). Shared rows only. */
 						ownerName?: string | null
+						/** 🚧 (M2e) Present exactly when this is a provided book whose owner is present: Delete is refused. A disabled book is not listed, so `disabled` reads false here. 🚧 (m3b-F) `pluginName` is who the book comes with — the plugin's display name (`plugins.name`, else its id); `null` for core ("Serene Pub"), the same value and meaning as `readOnly.pluginName`. */
+						provided?: {
+							disabled: boolean
+							pluginName: string | null
+						}
+						/** 🚧 (s22-V, ★§22-3) How each enabled genre rates the book's own rules (`rulesetFitReader`, the Rulesets view's same words). Absent for a book on Freeform (it brings no rules: the session chooses), for unregistered rules, and when no genre speaks. */
+						rulesetFitByGenre?: import("$lib/server/rulesets/genreFit").RulesetGenreFit[]
+						/** 🚧 (m2e-F-D) Present exactly when this is a primer row (a `starter_kit` with its own provided mark, owner present): every edit is refused; clone it. Same meaning as a shipped prompt's `readOnly`. `pluginName` names who it comes with — `null` for core ("the pub"); `primerRowEditRefusal` (`$lib/shared/lorebooks/primerRow`) words it. */
+						readOnly?: { pluginName: string | null }
 						/** The cover image's address; null when the book has none. */
 						coverMedia?: AvatarMedia | null
 						/**
 						 * 🚧 How the asker reads this book (lane A3): `owner` writes,
 						 * `shared` reads and duplicates only. The ONE field the
-						 * client derives read-only from. Every row carries it.
+						 * client derives read-only from: read-only is `bookAccess !==
+						 * "owner"` or `readOnly`. Every row carries it.
 						 */
 						bookAccess?: "owner" | "shared" | "admin"
 						/**
@@ -7420,6 +8371,10 @@ declare global {
 								isSharedWithMe?: boolean
 								/** The sharer's display name. Shared reads only. */
 								ownerName?: string | null
+								/** 🚧 (M2e) Present exactly when this is a provided book whose owner is present; `disabled` is true for a book a session still reads. */
+								provided?: { disabled: boolean }
+								/** 🚧 (m2e-F-D) Present exactly when this is a primer row (a `starter_kit` with its own provided mark, owner present): every edit is refused; clone it. Same meaning as a shipped prompt's `readOnly`. `pluginName` names who it comes with — `null` for core ("the pub"); `primerRowEditRefusal` (`$lib/shared/lorebooks/primerRow`) words it. */
+								readOnly?: { pluginName: string | null }
 								/** The cover image's address; null when it has none. */
 								coverMedia?: AvatarMedia | null
 								/**
@@ -7726,6 +8681,78 @@ declare global {
 					warnings?: string[]
 				}
 			}
+			/**
+			 * 🚧 One cast version in the member form's column names
+			 * (`memberColumnsOfVersion`), with the card it reads from: its
+			 * parent card version's card, null = card-less.
+			 */
+			interface CastVersionColumns {
+				/** A card-less version's name; null for a carded one. */
+				name: string | null
+				aliases: string[]
+				summary: string | null
+				description: string | null
+				personality: string | null
+				scenario: string | null
+				firstMessage: string | null
+				alternateGreetings: string[]
+				/** 🚧 The version's own greetings marked for group sessions only. */
+				groupOnlyGreetings: string[]
+				exampleDialogues: string | null
+				/** 🚧 The version's own post-history instructions, kept while the field follows the card. */
+				postHistoryInstructions: string | null
+				/** 🚧 The version's own creator notes, kept while the field follows the card. */
+				creatorNotes: CharacterCreatorNotes | null
+				/** 🚧 The version's own likeness, kept while the field follows the card. */
+				likeness: CharacterLikenessInput | null
+				faceMediaId: number | null
+				retold: SelectLorebookBinding["retold"]
+				ownName: string | null
+				ownNickname: string | null
+				timbre: SelectLorebookBinding["timbre"]
+				spriteSet: string | null
+				nodeState: SelectLorebookBinding["nodeState"]
+				nodeVisibility: SelectLorebookBinding["nodeVisibility"]
+				characterId: number | null
+			}
+			/**
+			 * 🚧 What a cast member row carries beside its columns (lane
+			 * cv-member2). The row's frozen columns, `characterId` and
+			 * `character` are those of **the cast version in force at the
+			 * book's present on main** — "the most recently active" (owner
+			 * 2026-11-06); Save writes it.
+			 */
+			interface CastRowVersion {
+				/** 🚧 The cast version the row's columns are. Null only for a member with no version (a logged error). */
+				castVersionId: number | null
+				/** 🚧 That version's own greetings marked for group sessions only. */
+				groupOnlyGreetings: string[]
+				/** 🚧 The shown version's own post-history instructions (a version-only field; no row column). */
+				postHistoryInstructions: string | null
+				/** 🚧 The shown version's own creator notes (a version-only field; no row column). */
+				creatorNotes: CharacterCreatorNotes | null
+				/** 🚧 The shown version's own likeness (a version-only field; no row column). */
+				likeness: CharacterLikenessInput | null
+				/**
+				 * 🚧 The member's base version (undated, main, no life point),
+				 * in column names: what the member reads before its first
+				 * change. The client folds the Changes rows' `columns` over it
+				 * at a moment. Null when the member has no base.
+				 */
+				baseColumns: CastVersionColumns | null
+				/** 🚧 The card version the shown version reads from; null = card-less. */
+				cardVersion: Characters.CardVersionSummary | null
+				/** 🚧 That card's current version (its highest number); null = card-less. */
+				cardCurrentVersion: Characters.CardVersionSummary | null
+				/** 🚧 The shown version reads an older version of its card than the current one: the Update offer. */
+				behindCard: boolean
+			}
+			/** 🚧 One cast member as the member page and the cast lists get it. */
+			type CastMemberRow = SelectLorebookBinding &
+				CastRowVersion & {
+					character?: SelectCharacter | null
+					persona?: SelectCharacter | null
+				}
 			namespace BindingList {
 				interface Params {
 					lorebookId: number
@@ -7735,10 +8762,18 @@ declare global {
 					// Matches the `with: { character: true, persona: true }`
 					// query in registerLorebookHandlers' "lorebooks:bindingList"
 					// handler (lorebooks.ts).
-					lorebookBindingList: (SelectLorebookBinding & {
-						character?: SelectCharacter | null
-						persona?: SelectCharacter | null
-					})[]
+					lorebookBindingList: CastMemberRow[]
+					/**
+					 * 🚧 The book's present on main (its story clock, else the
+					 * newest dated history entry; `bookPresentOf`); null when it
+					 * has neither. The rows' columns are read there; the client
+					 * reads "now" on main there too.
+					 */
+					present: {
+						year: number
+						month: number | null
+						day: number | null
+					} | null
 				}
 			}
 			namespace BindingsForCharacter {
@@ -7762,7 +8797,75 @@ declare global {
 						lorebookName: string
 						castId: number
 						retold: RetoldField[]
+						/**
+						 * The fields this member still reads from the card
+						 * — what editing the card changes for them.
+						 */
+						followsCard: RetoldField[]
+						/**
+						 * The member's name in that book as it is shown: the
+						 * `memberShownName` rule against this card (its own
+						 * name or nickname over the card's), the rule
+						 * `memberAsRead` reads by.
+						 */
+						memberName: string
+						/** 🚧 The card version the member's shown version reads from; null = card-less there. */
+						cardVersion: Characters.CardVersionSummary | null
+						/** 🚧 That card's current version; null = card-less there. */
+						cardCurrentVersion: Characters.CardVersionSummary | null
+						/** 🚧 The member reads an older version of the card: the Update offer. */
+						behindCard: boolean
 					}[]
+				}
+			}
+			/**
+			 * 🚧 `lorebooks:memberOfSeat` — the cast member one seat of a
+			 * session seats, for a press on a person's name in the session.
+			 * Asked by the session's owner or a guest.
+			 */
+			namespace MemberOfSeat {
+				interface Params {
+					sessionId: number
+					/**
+					 * A seat ref: `character:<cardId>`, `seated-member:<memberId>`
+					 * or `player-seat:<id>`, resolved inside this session.
+					 */
+					ref: string
+				}
+				interface Response {
+					/** The request's session, echoed so the asker can match the reply. */
+					sessionId: number
+					/** The request's ref, echoed. */
+					ref: string
+					/**
+					 * The member the seat seats. Null when there is no such
+					 * seat or no member seated there yet (the caller opens the
+					 * card then).
+					 */
+					member: {
+						castMemberId: number
+						lorebookId: number
+						/**
+						 * Whether the asker can open this member's book in their
+						 * Lorebooks view. False for a guest without a share and
+						 * for anyone reaching into another person's session notes.
+						 */
+						opensInBook: boolean
+						/**
+						 * The read-only sheet the session draws instead; present
+						 * only when `opensInBook` is false. Name, face and the
+						 * parts the member tells in its own words — nothing else.
+						 */
+						sheet: {
+							name: string
+							nickname: string | null
+							shownName: string
+							/** The face the session draws the member with, as `memberAsRead` gives it. */
+							faceMediaId: number | null
+							/** Retold parts the member tells itself (not following the card), in retold-field order. */
+							ownWords: { field: RetoldField; texts: string[] }[]
+						} | null
+					} | null
 				}
 			}
 			namespace CreateBinding {
@@ -7790,10 +8893,48 @@ declare global {
 			}
 			namespace UpdateBinding {
 				interface Params {
-					lorebookBinding: UpdateLorebookBinding
+					/** `groupOnlyGreetings` goes onto the version, never the row. */
+					lorebookBinding: UpdateLorebookBinding & {
+						groupOnlyGreetings?: string[]
+						/** 🚧 Post-history instructions go onto the version, never the row; text or null. */
+						postHistoryInstructions?: string | null
+						/** 🚧 Creator notes go onto the version, never the row; null sends none. */
+						creatorNotes?: CharacterCreatorNotes | null
+						/** 🚧 Likeness goes onto the version, never the row; null sends none. */
+						likeness?: CharacterLikenessInput | null
+					}
+					/**
+					 * 🚧 Also write these changes onto the member's later
+					 * authored cast versions on that line (a session-written
+					 * one keeps its words).
+					 */
+					changeLaterVersions?: boolean
 				}
 				interface Response {
-					lorebookBinding: SelectLorebookBinding
+					lorebookBinding: CastMemberRow
+					/** 🚧 Per later cast version: how many took the change, how many kept their words. */
+					laterVersions?: { changed: number; kept: number }
+				}
+			}
+			/**
+			 * 🚧 `lorebooks:updateMemberToCardVersion` — **Update ‹member› to
+			 * card ‹label›**: the member's versions on an older version of its
+			 * card move to that card's current version
+			 * (`updateMemberToCardVersion`, under the book's lock). The book's
+			 * owner only. Answers the member as the cast list now has it.
+			 */
+			namespace UpdateMemberToCardVersion {
+				interface Params {
+					castId: number
+				}
+				interface Response {
+					lorebookId: number
+					castId: number
+					/** How many of the member's versions moved. */
+					moved: number
+					/** The card version they moved to. */
+					cardVersion: Characters.CardVersionSummary
+					lorebookBinding: CastMemberRow
 				}
 			}
 			/**
@@ -7993,7 +9134,18 @@ declare global {
 				interface Response {
 					lorebookId: number
 					typeId: EntryTypeId
-					entryList: LorebookEntry[]
+					/**
+					 * 🚧 History entries only: `unfiledSceneCount` is how many
+					 * scenes not yet compiled (`scenes.history_entry_id` null) a
+					 * compile of this entry would take in — the unfiled scenes the
+					 * entry's own line reads (main's shared ones and that line's
+					 * chain) whose day's entry is this one (`unfiledScenesByEntry`).
+					 * Absent when there are none. Projected,
+					 * never written from a client; sent by the book's list only.
+					 */
+					entryList: Array<
+						LorebookEntry & { unfiledSceneCount?: number }
+					>
 				}
 			}
 			namespace Create {
@@ -8108,6 +9260,20 @@ declare global {
 						/** Pieces the rules' library offers for it; 0 for none. */
 						libraryRows: number
 					}[]
+					/**
+					 * 🚧 ★50 Lists of OTHER rules the book holds entries of, under those
+					 * rules' name — listed and counted in the workspace, never added to.
+					 */
+					otherRules: {
+						rulesName: string
+						types: {
+							typeId: string
+							label: string
+							repertoireId: string
+							piece: import("@serene-pub/sdk").FieldDecl
+							libraryRows: number
+						}[]
+					}[]
 				}
 			}
 			/**
@@ -8141,6 +9307,12 @@ declare global {
 				}
 				interface Response {
 					lorebookId: number
+					/**
+					 * The line these figures are of, echoed from the ask
+					 * (`null` = main), so a reply for a line the reader has
+					 * since left is told apart and dropped.
+					 */
+					branchId: number | null
 					counts: Record<string, number>
 				}
 			}
@@ -8165,7 +9337,8 @@ declare global {
 					 * Each entry's figures in that turn, off the ranking store
 					 * (L1, R58) — what the Read-in line says for the book's
 					 * owner without a receipt: rank among the entries judged,
-					 * tokens, the key that matched, the budget.
+					 * tokens, the key that matched, the budget, and why the turn
+					 * left it out.
 					 */
 					facts?: Record<
 						number,
@@ -8175,6 +9348,17 @@ declare global {
 							tokens?: number
 							matched?: string
 							budget?: number
+							/**
+							 * Select's code for the decision that left the entry out
+							 * (`ranking_decisions.reason`). Present only when the turn
+							 * left it out.
+							 */
+							reason?: string
+							/**
+							 * That decision's own sentence (`ranking_decisions.why`).
+							 * Present only when the turn left it out and the store has one.
+							 */
+							why?: string
 						}
 					>
 					lorebookId: number
@@ -8407,6 +9591,11 @@ declare global {
 				 * (`amendmentsForAppearance`).
 				 */
 				personalPosition: number | null
+				/**
+				 * 🚧 The whole version in column names, with its parent's card
+				 * (`fields` stays what changed from the version before it).
+				 */
+				columns: Lorebooks.CastVersionColumns
 			}
 			/**
 			 * Where in their own life a member stands, and when.
@@ -8458,6 +9647,12 @@ declare global {
 					cast: CastRow[]
 					presences: Presence[]
 					branches: Branch[]
+					/**
+					 * 🚧 Only on the broadcast that answers the asker's own cast
+					 * `amendments:create` / `update`: per later cast version, how
+					 * many took the change and how many kept their words.
+					 */
+					laterVersions?: { changed: number; kept: number }
 				}
 			}
 
@@ -8480,8 +9675,18 @@ declare global {
 					day?: number | null
 					fields: Record<string, unknown>
 					historyEntryId?: number | null
+					/**
+					 * 🚧 Also write these changes onto the member's later
+					 * authored cast versions on that line (a session-written
+					 * one keeps its words).
+					 */
+					changeLaterVersions?: boolean
 				}
-				type Response = List.Response
+				/** `laterVersions` is on a cast amendment's reply only. */
+				type Response = List.Response & {
+					/** 🚧 Per later cast version: how many took the change, how many kept their words. */
+					laterVersions?: { changed: number; kept: number }
+				}
 			}
 
 			/**
@@ -8498,8 +9703,18 @@ declare global {
 					month?: number | null
 					day?: number | null
 					fields?: Record<string, unknown>
+					/**
+					 * 🚧 Also write these changes onto the member's later
+					 * authored cast versions on that line (a session-written
+					 * one keeps its words).
+					 */
+					changeLaterVersions?: boolean
 				}
-				type Response = List.Response
+				/** `laterVersions` is on a cast amendment's reply only. */
+				type Response = List.Response & {
+					/** 🚧 Per later cast version: how many took the change, how many kept their words. */
+					laterVersions?: { changed: number; kept: number }
+				}
 			}
 
 			namespace Delete {
@@ -9207,25 +10422,9 @@ declare global {
 					origin?: string
 				}
 				/**
-				 * For a `variable-template-ref` option: the selected layout
-				 * row in full, for the same reason — a name in a dropdown
-				 * cannot answer "what does this produce".
-				 *
-				 * The variable id is deliberately absent: it is shaped like
-				 * a node key (`core:var/history@1`) and the payload carries
-				 * no topology. Every mutation is addressed by the option
-				 * handle instead.
-				 */
-				variableTemplate?: {
-					id: number
-					name: string
-					source: string
-					readOnly: boolean
-				}
-				/**
 				 * For a `context-template-ref` option: the selected story
-				 * string, in full. The same ride-along as `prompt` and
-				 * `variableTemplate`, and here it matters most — a context
+				 * string, in full. The same ride-along as `prompt`, and here
+				 * it matters most — a context
 				 * template is the largest authored thing in the product, and a
 				 * picker showing "Default" says nothing about what the prompt
 				 * will look like.
@@ -9860,6 +11059,15 @@ declare global {
 				 * not have to translate back from prose.
 				 */
 				reason?: string
+				/**
+				 * The mechanism's own reason for declining the entry before the
+				 * ranker (the skip's `reason`, e.g. `"entry is archived"`).
+				 * Present only on a `skipped` row that had one, never on a
+				 * judged row. Not `reason`, which is `select`'s code
+				 * (`excluded_budget`…) and absent on a skipped row. The prose
+				 * `verdict` quotes it and is for reading; this is for code.
+				 */
+				skipReason?: string
 				/** Which node decided, for a spec ranking in more than one gather branch. */
 				nodeKey?: string
 				/**
@@ -10303,6 +11511,13 @@ declare global {
 				 * the run, not only which fields (`whatIsReviewed`, note 16).
 				 */
 				whatIsReviewed: string
+				/**
+				 * 🚧 A picture step's prompt rows by the field each wraps
+				 * (`{{prompt}}` / `{{negative}}`): the card shows each field
+				 * as it will be sent, the row's fixed words read-only around
+				 * the person's part (owner ruling 2026-11-08).
+				 */
+				sentAs?: Record<string, string>
 			}
 			namespace Reviews {
 				interface Params {}
@@ -10576,48 +11791,6 @@ declare global {
 					error?: string
 				}
 			}
-			namespace CloneVariableTemplate {
-				interface Params {
-					slug: string
-					optionId: string
-					templateId: number
-					name?: string
-					sessionId?: number
-				}
-				interface Response {
-					templateId?: number
-					pipeline?: NamespaceDetail
-					error?: string
-				}
-			}
-			namespace UpdateVariableTemplate {
-				interface Params {
-					slug: string
-					optionId: string
-					templateId: number
-					name?: string
-					source?: string
-					/** Registered engine id; null/absent means core's default. */
-					engine?: string | null
-					sessionId?: number
-				}
-				interface Response {
-					pipeline?: NamespaceDetail
-					error?: string
-				}
-			}
-			namespace DeleteVariableTemplate {
-				interface Params {
-					slug: string
-					optionId: string
-					templateId: number
-					sessionId?: number
-				}
-				interface Response {
-					pipeline?: NamespaceDetail
-					error?: string
-				}
-			}
 			/**
 			 * Context templates — the story string, mutated through the setting
 			 * that renders it.
@@ -10769,6 +11942,10 @@ declare global {
 					/** The pipeline it was authored in, when it records one. */
 					origin?: string
 					usedBy: string[]
+					/** Variable layouts only: the layout reference, null on a person's older row. */
+					reference?: string | null
+					/** Variable layouts only: whether this row is the pub's layout for its variable. */
+					pubDefault?: boolean
 				}
 				interface LibraryPool {
 					id: string
@@ -10832,6 +12009,13 @@ declare global {
 					source?: string
 					/** Registered engine id; null/absent means core's default. */
 					engine?: string | null
+					/**
+					 * Variable layouts only: the reference to give the new row
+					 * (`<ownerSlug>/<slug>@<the variable's major>`).
+					 */
+					reference?: { ownerSlug: string; slug: string }
+					/** Variable layouts only: make the new row the pub's layout. */
+					useEverywhere?: boolean
 				}
 				interface CloneParams {
 					kind: Kind
@@ -10845,6 +12029,11 @@ declare global {
 					source?: string
 					/** Registered engine id; null/absent means core's default. */
 					engine?: string | null
+					/**
+					 * Variable layouts only: give a row with no reference one.
+					 * Refused once it has one (a reference is fixed once set).
+					 */
+					reference?: { ownerSlug: string; slug: string }
 				}
 				interface DeleteParams {
 					kind: Kind
@@ -10866,6 +12055,169 @@ declare global {
 					 * instead, and nothing is written.
 					 */
 					warnings?: TemplateWarning[]
+				}
+			}
+			/**
+			 * ⏳ Leftover picks (PLAN variable-layouts 2026-11-10, W4): a per-step
+			 * variable layout stored before layouts moved to the variable. Four
+			 * admin-only request/response events; none is scoped.
+			 */
+			namespace LeftoverPicks {
+				/** Where a leftover pick is stored. */
+				type Scope =
+					| { kind: "genre"; genreId: string }
+					| { kind: "preset"; presetId: number }
+					| { kind: "instance" }
+				interface Pick {
+					/** The step's opaque handle, `ConfigOption.step.key`. */
+					stepKey: string
+					/** The step's variables slot. */
+					slot: string
+					/** The key the slot renders (`characters`). */
+					key: string
+					variableId: string
+					variableLabel: string
+					/** The variable layout row the pick names. */
+					templateId: number
+					layoutName: string
+					scope: Scope
+					/** A preset-scope pick's preset, by name. */
+					presetName?: string
+				}
+				interface Step {
+					/** The step's opaque handle, `ConfigOption.step.key`. */
+					stepKey: string
+					slot: string
+					/** The context template the step renders with, when one resolves. */
+					contextTemplate: { id: number; name: string } | null
+					/** True only on the pub's own copy of a template (not shipped, not a package's). */
+					canMoveIntoTemplate: boolean
+					/** The step's own heading; sent only when its lines show under another step's template. */
+					stepHeading?: string
+					picks: Pick[]
+				}
+				/** The scope in view: a session's preset, or one named. Genre and instance picks are always listed. */
+				interface View {
+					sessionId?: number
+					presetId?: number
+				}
+				interface Params extends View {
+					slug: string
+				}
+				/** Answers echo the asker's `slug` and scope in view, so a view takes only its own. */
+				interface Response extends View {
+					slug?: string
+					steps?: Step[]
+					error?: string
+				}
+				/** A leftover-pick event's `:error`: the words, with the asker's `slug` and scope in view echoed. */
+				interface Refusal extends View {
+					error: string
+					slug?: string
+				}
+			}
+			/** **Remove this pick**: removes one leftover pick. Answers with the fresh `LeftoverPicks.Response`. */
+			namespace ClearLeftoverPick {
+				interface Params extends LeftoverPicks.View {
+					slug: string
+					scope: LeftoverPicks.Scope
+					/** The step's opaque handle, `ConfigOption.step.key`. */
+					stepKey: string
+					slot: string
+					key: string
+				}
+				type Response = LeftoverPicks.Response
+			}
+			/**
+			 * **Move into the template**: names the step's picked layouts in its
+			 * context template and removes the step's leftovers, in one
+			 * transaction. Only the pub's own copy of a template.
+			 */
+			namespace MoveLeftoversIntoTemplate {
+				interface Params extends LeftoverPicks.View {
+					slug: string
+					/** The step's opaque handle, `ConfigOption.step.key`. */
+					stepKey: string
+					slot: string
+					/** Needed when a picked layout has no reference yet: whose name to file it under. */
+					ownerSlug?: string
+				}
+				interface Response extends LeftoverPicks.Response {
+					templateId?: number
+					templateName?: string
+					/** Keys now named in the template, with the reference and the reads rewritten. */
+					moved?: Array<{
+						key: string
+						reference: string
+						reads: number
+					}>
+					/** Keys whose pick stayed, and why. */
+					kept?: Array<{ key: string; why: string }>
+					/** Layouts this move gave a reference. */
+					stamped?: Array<{ templateId: number; reference: string }>
+				}
+				/**
+				 * Why a move was refused, for code to act on beside the words:
+				 * `needs-owner-slug` — a picked layout has no reference yet;
+				 * send again with `ownerSlug`.
+				 */
+				type RefusalCode = "needs-owner-slug"
+				interface Refusal extends LeftoverPicks.Refusal {
+					code?: RefusalCode
+				}
+			}
+			/** 🚧 A preset's variable layouts (W6). */
+			namespace PresetVariableLayouts {
+				interface Params {
+					presetId: number
+				}
+				interface Row {
+					variableId: string
+					variableLabel: string
+					/** The reference the preset states. */
+					reference: string
+					/** The layout row it names now; null when it names none (removed package). */
+					templateId: number | null
+					layoutName: string | null
+					/** What the pub would use: its chosen layout, else the package default. */
+					pubLayout: {
+						templateId: number
+						name: string
+						chosen: boolean
+					} | null
+				}
+				interface Response {
+					presetId?: number
+					/** False for a preset written in code (shipped, or a package's). */
+					editable?: boolean
+					rows?: Row[]
+					/** Entries that name no layout now: skipped at run time, the pub's layout renders. */
+					dangling?: Array<{ variableId: string; reference: string }>
+					/** The variables this preset's pipelines render: what **Change a variable's layout** offers. */
+					candidates?: string[]
+					error?: string
+				}
+			}
+			/** Set (`reference`) or clear (`reference: null`) one of a preset's variable layouts. */
+			namespace SetPresetVariableLayout {
+				interface Params {
+					presetId: number
+					variableId: string
+					reference: string | null
+				}
+				type Response = PresetVariableLayouts.Response
+			}
+			/** Give a variable layout with no reference one: `<ownerSlug>/<its name as a slug>@<major>`. */
+			namespace StampVariableTemplateReference {
+				interface Params {
+					templateId: number
+					ownerSlug: string
+				}
+				interface Response {
+					library?: Library.Response
+					templateId?: number
+					reference?: string
+					error?: string
 				}
 			}
 			/** Something to say about a template, and where in it. */
@@ -10899,6 +12251,187 @@ declare global {
 					 */
 					checked: boolean
 					error?: string
+				}
+			}
+			/**
+			 * 🚧 Variable layouts (PLAN variable-layouts 2026-11-10, W1 W2 W3 W5).
+			 * Admin-only reads and the pub's-layout write behind Admin › Writing ›
+			 * Variable layouts. Not scoped. `pipelines:previewTemplate` (kind
+			 * "variable") is the live preview of an unsaved layout.
+			 */
+			namespace VariableLayouts {
+				/** Why a variable is written out the way it is, no session in view. */
+				type Reason = "pub" | "default" | "automatic" | "as-written"
+				/** The layout in use for a variable: the pub's, else the package default. */
+				interface InUse {
+					id: number
+					name: string
+					/** Null on a person's older row. */
+					reference: string | null
+					reason: "pub" | "default" | "automatic"
+				}
+				/** W1: one registered variable, on its shelf. */
+				interface ListRow {
+					variableId: string
+					/** The template key it renders under (its first scope root); null when it declares none. */
+					key: string | null
+					label: string
+					description: string
+					shelfId: string
+					shelfLabel: string
+					/** Serene Pub, or the plugin's name. */
+					supplier: string
+					/** Null with no layout row at all: written *As written*. */
+					inUse: InUse | null
+					reason: Reason
+					/** Presets whose own choice is a different layout. */
+					presetsDiffering: number
+					layoutCount: number
+				}
+				namespace List {
+					interface Params {}
+					interface Response {
+						variables?: ListRow[]
+						error?: string
+					}
+				}
+				/** W2: one layout of a variable. */
+				interface Row {
+					id: number
+					name: string
+					/** Serene Pub, the plugin's name, or This pub. */
+					ownerLabel: string
+					reference: string | null
+					engine: string
+					isImmutable: boolean
+					/** A person's own row only. */
+					editable: boolean
+					/** Rendered server-side against the variable's sample. */
+					preview: string | null
+					previewError: string | null
+					/** The pub's layout, or the package default when none is set. */
+					inUse: boolean
+					/** Context templates naming this reference for a key that renders the variable. */
+					namedByTemplates: number
+					chosenByPresets: { id: number; name: string }[]
+				}
+				/** One thing that writes this variable out with another layout than the one in use. */
+				type Difference =
+					| {
+							kind: "template"
+							id: number
+							name: string
+							layout: { id: number; name: string }
+					  }
+					| {
+							kind: "leftover"
+							specSlug: string
+							pipelineLabel: string
+							stepKey: string
+							stepHeading?: string
+							layout: { id: number; name: string }
+					  }
+					| {
+							kind: "preset"
+							id: number
+							name: string
+							layout: { id: number; name: string }
+					  }
+					| {
+							kind: "authored"
+							specSlug: string
+							pipelineLabel: string
+							stepKey: string
+							stepHeading?: string
+							layout: { id: number; name: string }
+					  }
+				interface Variable {
+					variableId: string
+					label: string
+					description: string
+					supplier: string
+					/** What a layout of this variable reads (its template scope). */
+					scope: Record<string, unknown>
+					sample: unknown
+					/** The package default, for *Back to the default*. */
+					default: { id: number; name: string } | null
+					/** The pub's choice is not the package default. */
+					pubDiffersFromDefault: boolean
+					inUse: InUse | null
+					rows: Row[]
+					/** Where the run uses another layout than the one in use. */
+					differs: Difference[]
+				}
+				namespace One {
+					interface Params {
+						variableId: string
+					}
+					interface Response {
+						variable?: Variable
+						error?: string
+					}
+				}
+				namespace SetPub {
+					interface Params {
+						variableId: string
+						/** A row of that variable; null goes back to the package default. */
+						templateId: number | null
+					}
+					interface Response {
+						variable?: Variable
+						/** Plain-words advice about the change, e.g. presets that keep their own. */
+						warnings?: string[]
+						error?: string
+					}
+				}
+				/** W3: what *Use it everywhere* would change. */
+				namespace UseEverywhereCounts {
+					interface Params {
+						variableId: string
+					}
+					interface Response {
+						variableId?: string
+						pipelines?: number
+						contextTemplates?: number
+						/** Templates in a language the check cannot read: not counted. */
+						uncheckedContextTemplates?: number
+						error?: string
+					}
+				}
+				/** W5: one laid-out key in a context template's scope. */
+				interface TemplateKey {
+					key: string
+					variableId: string
+					variableLabel: string
+					/** Null when no row resolves: written by the variable's floor. */
+					inUse: InUse | null
+					/** The SDK's `variableLayoutOffers` shape. */
+					offers: { reference: string; label: string }[]
+				}
+				namespace ForTemplate {
+					/** The library asks by step type; a step by pipeline and the panel's opaque step handle. */
+					type Params =
+						| { nodeType: string }
+						| { specSlug: string; stepKey: string }
+					/** The asked target, echoed on the answer and the `:error` as sent. */
+					interface Echo {
+						nodeType?: string
+						specSlug?: string
+						stepKey?: string
+					}
+					interface Response extends Echo {
+						keys?: TemplateKey[]
+						/**
+						 * A step target only: the step's heading as the panel shows it
+						 * (`ConfigOption.step.heading`). Omitted when no declaration names
+						 * the node.
+						 */
+						stepHeading?: string
+						error?: string
+					}
+					interface Refusal extends Echo {
+						error: string
+					}
 				}
 			}
 			namespace LibraryPromptWrite {
@@ -11474,7 +13007,21 @@ declare global {
 						 */
 						sessionId: number | null
 						startedAt: string
+						/** Which family of registration started it: event, action or routine; null when none did. */
+						triggerFamily: string | null
+						/** The registration that started it, as its derived key; null when none did. */
+						registrationKey: string | null
+						/** The receipt's trigger source. */
+						triggerSource: string
+						/** When the run ended (ISO). */
+						endedAt: string
+						/** The run that dispatched this one; null when nothing did. */
+						parentRunId: string | null
+						/** How deep in a dispatch tree it stands; 0 for a root. */
+						depth: number
 					}[]
+					/** The session asked for, echoed so a reader of one session's runs can tell its reply from another's. */
+					sessionId?: number
 				}
 			}
 		}
@@ -11778,8 +13325,35 @@ declare global {
 					 */
 					kind?: OllamaModelKind
 				}
+				/** One choosable quant of a recommended row. */
+				interface RecommendedQuant {
+					label: string
+					/** The pull tag Ollama accepts: `hf.co/<repo>:<quant>`. */
+					tag: string
+					filename: string
+					sizeBytes?: number
+					/** True for exactly the quant the list recommends. */
+					recommended: boolean
+				}
+				/** A recommended.yaml row plus its quant list. */
+				interface RecommendedModel {
+					name: string
+					pull: string
+					size: number
+					recommended_vram: number
+					tags: string[]
+					details: {
+						parameter_size: string
+						quantization_level: string
+						modified_at: string
+						description: string
+					}
+					quants: RecommendedQuant[]
+					/** Why `quants` is empty (library name, or HF did not answer). */
+					quantsNote?: string
+				}
 				interface Response {
-					recommendedModels: any[]
+					recommendedModels: RecommendedModel[]
 					// Optional - see SearchAvailableModels.Response.error above for
 					// why the success-path handler defensively checks for this.
 					error?: string
@@ -12002,6 +13576,20 @@ declare global {
 					threads?: number
 					quant?: 0 | 1 | 2
 				}
+				/**
+				 * The speech slot (`--ttsmodel`, plus `--ttswavtokenizer` for the
+				 * two-file families). Its own shape rather than `Resident`: the
+				 * loader records paths, not knobs, and the wire mirrors the
+				 * loader's `AudioModelSlot` field for field (lane V finding V-6,
+				 * 2026-10-28).
+				 */
+				interface ResidentAudio {
+					/** Bare filename of the speech model, for display. */
+					ttsFile?: string
+					ttsModelPath: string
+					ttsWavTokenizerPath?: string
+					ttsGpu?: boolean
+				}
 				interface Response {
 					/**
 					 * What is resident, per kind — null if nothing is loaded, or if
@@ -12014,7 +13602,7 @@ declare global {
 					 * keeps working when that stops being true.
 					 */
 					config: {
-						resident: { text?: Resident; image?: Resident }
+						resident: { text?: Resident; image?: Resident; audio?: ResidentAudio }
 						rawConfigJson: string
 					} | null
 				}
@@ -12060,12 +13648,28 @@ declare global {
 					/** The tab the user was in. Stored with kind_source "declared";
 					 * the finished file is then sniffed and may correct it — a
 					 * declaration is a guess about a file, a detection is a
-					 * measurement of the file we now hold. Defaults to "text". */
-					kind?: ModelKindFilter
+					 * measurement of the file we now hold. Defaults to "text".
+					 * "speech" (a request only, never stored) files a KoboldCPP speech
+					 * model or codec in the text folder; anything else the detector
+					 * sees as speech or transcription is refused. */
+					kind?: ModelKindFilter | "speech"
+					/**
+					 * The vision projector that pairs with a text model (the
+					 * list's `mmproj`): fetched after the model into the same
+					 * folder, then set as the new model row's `visionProjector`
+					 * on every managed KoboldCPP (★A, 2026-11-11). Text kind only.
+					 */
+					visionProjector?: VisionProjectorPull
 				}
 				interface Response {
 					success: boolean
 				}
+			}
+			/** A projector file to fetch beside a model. */
+			interface VisionProjectorPull {
+				filename: string
+				downloadUrl: string
+				sizeBytes?: number
 			}
 			namespace DownloadProgress {
 				interface DownloadEntry {
@@ -12111,6 +13715,8 @@ declare global {
 					parameterSize?: string
 					/** The list's own tag vocabulary (`roleplay`, `vision`, …). */
 					tags?: string[]
+					/** The projector Get fetches with the model, when the list names one. */
+					visionProjector?: VisionProjectorPull
 				}
 				interface Params {
 					/** Defaults to "text" when absent. */
@@ -12184,6 +13790,15 @@ declare global {
 			namespace SetModelTtl {
 				interface Params {
 					ttlSecs: number
+				}
+				interface Response {
+					success: boolean
+				}
+			}
+			/** Keep the text and the image model loaded together when the card has room. */
+			namespace SetCoLoad {
+				interface Params {
+					enabled: boolean
 				}
 				interface Response {
 					success: boolean
@@ -12309,11 +13924,11 @@ declare global {
 					startedAt: string | null
 					lastError: string | null
 					restartCount: number
-					// True when this "running" status is an already-active koboldcpp
-					// instance found on the configured port that this managed KoboldCPP can't
-					// verify it spawned (no matching PID-file record) — Stop/Unload
-					// can't act on a process the app doesn't actually control.
-					isExternal: boolean
+					/**
+					 * The last co-load decision's sentence (`decideCoLoad`), null until
+					 * one is made or after the process goes.
+					 */
+					coLoadReason?: string | null
 				}
 			}
 			namespace GetSubprocessStatus {
@@ -12326,6 +13941,442 @@ declare global {
 				interface Params {}
 				interface Response {
 					success: boolean
+				}
+			}
+		}
+
+		/**
+		 * 🚧 audio.cpp, run by Serene Pub: the second managed service beside
+		 * KoboldCPP. Serene Pub downloads the audio.cpp binary and the speech and
+		 * transcription model packages, writes its `server.json`, and supervises
+		 * the process. Every handler is admin-only.
+		 *
+		 * Request events (client → server, ack'd): `audiocpp:getSettings`,
+		 * `audiocpp:updateSettings`, `audiocpp:listBinaryVariants`,
+		 * `audiocpp:listReleaseVersions`, `audiocpp:downloadBinary`,
+		 * `audiocpp:cancelBinaryDownload`, `audiocpp:installState`,
+		 * `audiocpp:listPackages`, `audiocpp:downloadPackage`,
+		 * `audiocpp:cancelPackageDownload`, `audiocpp:removePackage`,
+		 * `audiocpp:setPackageEnabled`, `audiocpp:confirmFamily`,
+		 * `audiocpp:getStatus`, `audiocpp:start`, `audiocpp:stop`,
+		 * `audiocpp:restart`.
+		 *
+		 * Pushes (server → client): `audiocpp:binaryDownloadProgress`,
+		 * `audiocpp:packageDownloadProgress`, `audiocpp:subprocessStatus`.
+		 *
+		 * A refused request answers on `audiocpp:<event>:error` with
+		 * `Sockets.ErrorResponse`, as KoboldCPP's do.
+		 */
+		namespace AudioCpp {
+			/** The compute backend an audio.cpp build runs on. */
+			type Backend = "cpu" | "vulkan" | "cuda" | "metal" | "rocm"
+			/** What a model package does: speech (`tts`), transcription (`asr`), or voice design (`vdes`). */
+			type PackageTask = "tts" | "asr" | "vdes"
+			/**
+			 * The five words KoboldCPP's subprocess status uses too — the shared
+			 * supervisor factory reports these. There is no "error" status; a
+			 * failure is `crashed` plus `StatusView.lastError`.
+			 */
+			type ProcessStatus =
+				| "stopped"
+				| "starting"
+				| "running"
+				| "crashed"
+				| "stopping"
+
+			/** Everything the settings page shows, secrets excluded. */
+			interface SettingsView {
+				/** The managed audio.cpp is switched on. */
+				enabled: boolean
+				/** Directory the binary is installed in; null until one is downloaded. */
+				binaryDir: string | null
+				/** The release asset name installed (e.g. `audio-v0.9.3-bin-ubuntu-x64-cpu-portable.tar.gz`); null until installed. */
+				binaryVariant: string | null
+				/** The release tag installed; null until installed. */
+				releaseTag: string | null
+				/** Port the process listens on (default 5002). */
+				port: number
+				/** Models directory as saved; null = `<models>/audio`. */
+				modelsDir: string | null
+				/** The effective models directory (what null resolves to, or the saved one). */
+				modelsDirResolved: string
+				/** Backend of the installed variant; null until installed. */
+				backend: Backend | null
+				/** GPU/device index to run on; null = audio.cpp's default device. */
+				deviceIndex: number | null
+				/** CPU threads; null = audio.cpp's default. */
+				threads: number | null
+				/** Most models held loaded at once; null = Serene Pub's rule (2 on GPU builds, 1 on CPU). */
+				maxLoadedModels: number | null
+				/** Milliseconds a loaded model idles before it is unloaded; null = audio.cpp's default. */
+				idleUnloadMs: number | null
+				/** Idle minutes before the process is stopped; 0 = never. */
+				subprocessTimeoutMinutes: number
+				/** Hash of the server.json the process was last spawned with; null until the first spawn. Differs from the current file's hash = a restart is due. */
+				configHash: string | null
+				/** `http://127.0.0.1:<port>`, derived from `port`. */
+				baseUrl: string
+			}
+			/** The editable subset of `SettingsView`. The install fields (`binaryDir`, `binaryVariant`, `releaseTag`, `backend`) and `configHash` are written by `downloadBinary` and the config writer, never here. */
+			interface EditableSettings {
+				/** Switch the managed audio.cpp on or off. */
+				enabled: boolean
+				/** Port to listen on. */
+				port: number
+				/** Models directory; null = `<models>/audio`. */
+				modelsDir: string | null
+				/** Device index; null = default device. */
+				deviceIndex: number | null
+				/** CPU threads; null = default. */
+				threads: number | null
+				/** Most models loaded at once; null = Serene Pub's rule. */
+				maxLoadedModels: number | null
+				/** Idle milliseconds before a model unloads; null = default. */
+				idleUnloadMs: number | null
+				/** Idle minutes before the process stops; 0 = never. */
+				subprocessTimeoutMinutes: number
+			}
+
+			namespace GetSettings {
+				interface Params {}
+				interface Response {
+					/** The current settings. */
+					settings: SettingsView
+				}
+			}
+			namespace UpdateSettings {
+				/** Any subset of the editable fields; absent fields are left alone. */
+				type Params = Partial<EditableSettings>
+				interface Response {
+					/** The settings after the update. */
+					settings: SettingsView
+				}
+			}
+
+			/** One installable build of audio.cpp. */
+			interface BinaryVariant {
+				/** Display name (e.g. "Linux, NVIDIA CUDA"). */
+				name: string
+				/** The release asset file name; what `downloadBinary` takes. */
+				assetName: string
+				/** Download size in bytes. */
+				sizeBytes: number
+				/** The compute backend this build runs on. */
+				backend: Backend
+				/** A `-portable` build (audio.cpp's own suffix: built to run on more CPUs, at some speed cost). */
+				portable: boolean
+				/** A second asset that must be fetched with it (e.g. the matching `cudart-*` archive on Windows CUDA). */
+				needsRuntimeAsset?: string
+				/** The build Serene Pub proposes for this machine. */
+				recommended?: boolean
+				/** Why to pick it (or not) — pickers explain why. */
+				reason?: string
+			}
+			namespace ListBinaryVariants {
+				interface Params {
+					/** Release tag to list; absent = the latest. */
+					tag?: string
+				}
+				interface Response {
+					/** Builds available for this release, this platform first. */
+					variants: BinaryVariant[]
+					/** The release tag the list is for. */
+					releaseTag: string
+				}
+			}
+			namespace ListReleaseVersions {
+				interface Params {}
+				interface ReleaseVersion {
+					/** Release tag. */
+					tag: string
+					/** ISO time the release was published. */
+					publishedAt: string
+					/** True for the newest release. */
+					isLatest: boolean
+				}
+				interface Response {
+					/** Releases, newest first. */
+					versions: ReleaseVersion[]
+				}
+			}
+			namespace DownloadBinary {
+				interface Params {
+					/** The release asset to install (`BinaryVariant.assetName`). */
+					assetName: string
+					/** The release tag to take it from. */
+					releaseTag: string
+				}
+				interface Response {
+					/** The download started; progress arrives on `audiocpp:binaryDownloadProgress`. */
+					success: boolean
+				}
+			}
+			namespace BinaryDownloadProgress {
+				interface DownloadState {
+					/** The asset being fetched. */
+					assetName: string
+					/** Where the download is. */
+					status:
+						| "starting"
+						| "downloading"
+						| "unpacking"
+						| "success"
+						| "error"
+						| "cancelled"
+					/** "runtime" = the second asset (the `cudart-*` archive); "binary" = audio.cpp itself. */
+					phase?: "binary" | "runtime"
+					/** Bytes received so far for this phase. */
+					downloaded: number
+					/** Bytes expected for this phase; 0 when unknown. */
+					total: number
+					/** The download has finished, one way or another. */
+					isDone: boolean
+					/** Why it failed, when `status` is "error". */
+					error?: string
+					/** False = no published checksum to check against; shown as "unverified". */
+					verified?: boolean
+				}
+				/** Push; `null` = nothing downloading. */
+				interface Response {
+					download: DownloadState | null
+				}
+			}
+			namespace CancelBinaryDownload {
+				interface Params {}
+				interface Response {
+					success: boolean
+				}
+			}
+			namespace InstallState {
+				interface Params {}
+				interface Response {
+					/** A usable binary is on disk. */
+					installed: boolean
+					/** Absolute path of the executable; null when not installed. */
+					binaryPath: string | null
+					/** The version audio.cpp reports. */
+					version?: string
+					/** Backend of the installed build. */
+					backend?: Backend
+					/** The release tag installed. */
+					releaseTag?: string | null
+					/** The release asset name installed. */
+					variant?: string | null
+					/** False = installed without a published checksum to check. */
+					verified?: boolean
+				}
+			}
+
+			/** One speech or transcription model package, as the packages list shows it. */
+			interface PackageRow {
+				/** Stable id of the package. */
+				id: string
+				/** Display name. */
+				name: string
+				/** What it does. */
+				task: PackageTask
+				/** audio.cpp's spec family id (e.g. `kokoro_tts`, `qwen3_tts`, `parakeet_tdt`) — data from the list, never read from a file name. */
+				family: string
+				/** The family's variant (`customvoice`, `base`, `voicedesign`, …), when it has one. */
+				variant?: string
+				/** The files that make up the package, relative to its directory. */
+				files: string[]
+				/** Total download size in bytes, when known. */
+				sizeBytes?: number
+				/** VRAM it wants, in GB as the list quotes it; 0 = fine on CPU. */
+				recommendedVram?: number
+				/** Licence name, when known. */
+				license?: string
+				/** Free-form labels (languages, "multilingual", …). */
+				tags: string[]
+				/** A sentence about it. */
+				description?: string
+				/**
+				 * How sure the match is. `listed` = from audio.yaml; `matched` = a
+				 * family rule matched; `guessed` = needs a person to confirm
+				 * (`confirmFamily`), never auto-enabled.
+				 */
+				confidence: "listed" | "matched" | "guessed"
+				/** Where the package is: not on disk, being fetched, on disk, or on disk and in server.json. */
+				state: "available" | "downloading" | "downloaded" | "enabled"
+				/** Serene Pub proposes this one for this machine. */
+				recommended: boolean
+				/** Why to pick it — pickers explain why. */
+				reason?: string
+				/** Directory it lives in once downloaded. */
+				localDir?: string
+				/** The numeric precision of the files (`q8_0`, `bf16`, `f16`, …); from the list, else derived from the file name. */
+				precision?: string
+				/** Who runs it; absent = audio.cpp. A `koboldcpp` row is only ever in `families`, never in `packages`. */
+				runtime?: "audiocpp" | "koboldcpp"
+				/** KoboldCPP rows: the files to fetch one by one (`koboldcpp:downloadModel`, kind "speech"), model first, then its codec file. */
+				koboldCppFiles?: { filename: string; downloadUrl: string; sizeBytes?: number }[]
+			}
+			/** One model with every precision it comes in: what a picker shows as one row. */
+			interface PackageFamily {
+				/** Stable: `${runtime}:${family}:${variant ?? ""}:${model}`, model = the display name without its precision, slugged (two sizes of one family+variant are two families). */
+				key: string
+				family: string
+				variant: string | null
+				task: PackageTask
+				runtime: "audiocpp" | "koboldcpp"
+				/** The name without its precision, e.g. "Qwen3-TTS 1.7B CustomVoice". */
+				displayName: string
+				/** The precision a picker pre-selects: the recommended row if any, else q8_0, else the first. */
+				recommendedId: string
+				/** q8_0 first, then bf16/f16, then the rest. */
+				precisions: PackageRow[]
+			}
+			namespace ListPackages {
+				interface Params {}
+				interface Response {
+					/** Every audio.cpp package (not KoboldCPP's), listed, matched and guessed. */
+					packages: PackageRow[]
+					/** The same packages plus KoboldCPP's conversions, grouped by family and variant. */
+					families: PackageFamily[]
+				}
+			}
+			namespace DownloadPackage {
+				interface Params {
+					/** `PackageRow.id`. */
+					id: string
+				}
+				interface Response {
+					/** The download started; progress arrives on `audiocpp:packageDownloadProgress`. */
+					success: boolean
+				}
+			}
+			namespace PackageDownloadProgress {
+				interface PackageDownloadState {
+					/** `PackageRow.id`. */
+					packageId: string
+					/** Display name. */
+					name: string
+					/** Where the download is. */
+					status:
+						| "starting"
+						| "downloading"
+						| "success"
+						| "error"
+						| "cancelled"
+					/** Bytes received so far, over all files. */
+					downloaded: number
+					/** Bytes expected, over all files; 0 when unknown. */
+					total: number
+					/** The download has finished, one way or another. */
+					isDone: boolean
+					/** Files finished. */
+					filesDone: number
+					/** Files in the package. */
+					filesTotal: number
+					/** The file being fetched now. */
+					currentFile?: string
+					/** Why it failed. */
+					error?: string
+				}
+				/** Push; keyed by package id. */
+				interface Response {
+					downloads: Record<string, PackageDownloadState>
+				}
+			}
+			namespace CancelPackageDownload {
+				interface Params {
+					/** `PackageRow.id`. */
+					id: string
+				}
+				interface Response {
+					success: boolean
+				}
+			}
+			namespace RemovePackage {
+				interface Params {
+					/** `PackageRow.id`. */
+					id: string
+				}
+				interface Response {
+					success: boolean
+				}
+			}
+			namespace SetPackageEnabled {
+				interface Params {
+					/** `PackageRow.id`. */
+					id: string
+					/** Put it in (or take it out of) server.json. The config rewrite and restart are the server's business. */
+					enabled: boolean
+				}
+				interface Response {
+					/** The package as it now stands. */
+					package: PackageRow
+				}
+			}
+			namespace ConfirmFamily {
+				interface Params {
+					/** Directory of the `guessed` package. */
+					localDir: string
+					/** The family the person says it is. */
+					family: string
+					/** What the person says it does. */
+					task: PackageTask
+				}
+				interface Response {
+					/** The package, now confirmed. */
+					package: PackageRow
+				}
+			}
+
+			/** The process, as `getStatus` and the `subprocessStatus` push both show it. */
+			interface StatusView {
+				/** Where the process is. */
+				status: ProcessStatus
+				/** Process id; null when not running. */
+				pid: number | null
+				/** ISO time it started; null when not running. */
+				startedAt: string | null
+				/** Times the supervisor has restarted it. */
+				restartCount: number
+				/** The port. */
+				port: number
+				/** `http://127.0.0.1:<port>`. */
+				baseUrl: string
+				/** Version the running process reports. */
+				version?: string
+				/** Backend the running process uses. */
+				backend?: Backend
+				/** Models loaded right now. */
+				loaded: { id: string; device?: string }[]
+				/** The running process was spawned with the current server.json. */
+				configApplied: boolean
+				/** The last failure, if any. */
+				lastError: string | null
+			}
+			namespace GetStatus {
+				interface Params {}
+				interface Response {
+					status: StatusView
+				}
+			}
+			namespace Start {
+				interface Params {}
+				interface Response {
+					status: StatusView
+				}
+			}
+			namespace Stop {
+				interface Params {}
+				interface Response {
+					status: StatusView
+				}
+			}
+			namespace Restart {
+				interface Params {}
+				interface Response {
+					status: StatusView
+				}
+			}
+			namespace SubprocessStatus {
+				/** Push; the same shape as `GetStatus`. */
+				interface Response {
+					status: StatusView
 				}
 			}
 		}
@@ -12729,9 +14780,13 @@ declare global {
 						startFavourites?: { genre?: string; presetByGenre?: Record<string, number> } | null
 						enableEasyCharacterCreation: boolean
 						showAllCharacterFields: boolean
+						/** 🚧 Show advanced controls (2026-11-10): shows the less everyday controls on sessions, lorebooks and characters. A preference, never a permission. */
+						showAdvancedControls: boolean
 						backgroundImagePath: string | null
 						backgroundOpacity: number
 						charaVaultIncludeNsfw: boolean
+						/** 🚧 How spoken lines play for this person (`spokenPlayback.ts`). */
+						spokenPlayback: import("$lib/shared/speech/spokenPlayback").SpokenPlayback
 						/**
 						 * The user's own choice (R5), or **null** meaning "follow
 						 * the instance default".
@@ -12757,6 +14812,11 @@ declare global {
 						loreWriteMode: LoreWriteMode | null
 						/** The resolved mode — theirs, else the instance's. */
 						effectiveLoreWriteMode: LoreWriteMode
+						/**
+						 * 🚧 This person's library write mode (M2c): null reads
+						 * Review. Sent as stored.
+						 */
+						libraryWriteMode?: LoreWriteMode | null
 						/**
 						 * 🚧 **Background routines** (R11; lane 7): this person's own
 						 * caps on their sessions' real-time routines — null following
@@ -12795,12 +14855,16 @@ declare global {
 			 */
 			namespace UpdateLoreWriteMode {
 				interface Params {
-					mode: LoreWriteMode | null
+					/** Absent leaves the lore write mode as it is. */
+					mode?: LoreWriteMode | null
+					/** 🚧 The library write mode (M2c); null reads Full. Absent leaves it. */
+					libraryWriteMode?: LoreWriteMode | null
 				}
 				interface Response {
 					success: boolean
 					mode: LoreWriteMode | null
 					effectiveMode: LoreWriteMode
+					libraryWriteMode?: LoreWriteMode | null
 				}
 			}
 			/** Pick a UI language, or null to follow the instance default (R5). */
@@ -12899,7 +14963,26 @@ declare global {
 			}
 			// ⚠ There is no `updateEasyPersonaCreation`: a persona is a
 			// character, so the switch below governs both surfaces.
+			/** 🚧 How spoken lines play for this person: auto, on press, or no player. */
+			namespace UpdateSpokenPlayback {
+				interface Params {
+					mode: import("$lib/shared/speech/spokenPlayback").SpokenPlayback
+				}
+				interface Response {
+					success: boolean
+					mode: import("$lib/shared/speech/spokenPlayback").SpokenPlayback
+				}
+			}
 			namespace UpdateEasyCharacterCreation {
+				interface Params {
+					enabled: boolean
+				}
+				interface Response {
+					success: boolean
+					enabled: boolean
+				}
+			}
+			namespace UpdateShowAdvancedControls {
 				interface Params {
 					enabled: boolean
 				}
@@ -12943,7 +15026,24 @@ declare global {
 			type SceneListRow = Omit<
 				SelectScene,
 				"embedding" | "embeddingModel"
-			>
+			> & {
+				/**
+				 * 🚧 ★S-4 (owner, 2026-11-04): why the scene opened, in the
+				 * scene cue's words (`SCENE_CUE_REASONS`, a genre's declared
+				 * label, a judged cue's reason) — the `placed` cues at its
+				 * opening line, joined. Derived at read (`sceneCauses`,
+				 * `liveScenes.ts`), never stored; absent for a scene a person
+				 * opened (by hand or by accepting a cue).
+				 */
+				openedBecause?: string
+				/**
+				 * 🚧 ★S-4: while the scene is open and its genre keeps its cast
+				 * up to date from its lines (`scenes.castRefresh`, scene mode
+				 * not Manual), the `openSceneCastCause` sentence — what does it
+				 * and how to stop it. Derived at read; absent otherwise.
+				 */
+				castCause?: string
+			}
 			/** Scene with resolved session name for sidebar display */
 			interface SceneWithMeta extends SceneListRow, SceneCast {
 				sessionName: string | null
@@ -13109,7 +15209,32 @@ declare global {
 				}
 			}
 			namespace Compile {
-				interface Params {
+				/**
+				 * Compile one history entry (`historyEntryId`), or — 🚧 S-B2
+				 * (owner, 2026-11-04) — **compile by date**: the line's scenes
+				 * not yet compiled of one day (`lorebookId` + `date`; `date`
+				 * null is the scenes with no story clock, *Undated*), into the
+				 * history entry of that date (`historyEntryOfDate`), which the
+				 * press creates when the line has none. Either way the run,
+				 * its frames and its review are the entry's.
+				 */
+				type Params = ByEntry | ByDate
+				interface ByDate {
+					lorebookId: number
+					/** The day; hour and minute never count. null = the scenes with no clock. */
+					date:
+						| import("$lib/shared/lorebooks/storyDate").StoryDate
+						| null
+					/** As on `ByEntry`: the line whose own scenes not yet compiled are taken, and where the review saves. */
+					branchId: number | null
+					/** As on `ByEntry`; never before `date`. */
+					moment:
+						| import("$lib/shared/lorebooks/storyDate").StoryDate
+						| null
+					/** 🚧 ★S6-1: echoed on this ask's `scenes:compile:error`, so the asker (the Chronicle's `compile-history-entry`, a Compile window) hears its own refusal and no other's. */
+					requestId?: string
+				}
+				interface ByEntry {
 					historyEntryId: number
 					/**
 					 * The line the compile reads, null for main: its scenes are
@@ -13170,6 +15295,8 @@ declare global {
 					error: string
 					/** The entry the refused compile was about, when the request named one. */
 					historyEntryId?: number
+					/** 🚧 The by-date ask's `requestId`, echoed when it sent one. */
+					requestId?: string
 				}
 			}
 			/**
@@ -13193,8 +15320,6 @@ declare global {
 				 * line before the new boundary.
 				 */
 				closedScene?: SceneListRow & SceneCast
-				/** True when the boundary created the history entry it was filed under. */
-				createdHistoryEntry?: boolean
 				/**
 				 * The cast `sceneCastProposal` proposed (no model), with its
 				 * evidence for the review. Members that resolve to a card
@@ -13376,6 +15501,10 @@ declare global {
 						since: string
 						lineCount: number
 						cast: Array<{ name: string; evidence: string }>
+						/** 🚧 ★S-4: as on `SceneListRow`. */
+						openedBecause?: string
+						/** 🚧 ★S-4: as on `SceneListRow`. */
+						castCause?: string
 					}>
 					/** The session's scene settings, resolved. */
 					settings: import("@serene-pub/sdk").SceneSettings
@@ -13780,6 +15909,20 @@ declare global {
 					sessionId: number
 				}
 				interface Response {
+					/**
+					 * The session asked about: the reply's interest scope
+					 * (`SCOPED_EVENTS`), so a reply reaches only the notice
+					 * showing this session. Every arm carries it, or
+					 * `emitToUser` sends nothing to a scoped listener.
+					 */
+					sessionId: number
+					/**
+					 * The session's lorebook, whose entries are counted; null
+					 * when it has none, or before it was read (no embedding
+					 * model). The notice listens for this book's
+					 * `vectorization:itemUpdated` by it.
+					 */
+					lorebookId: number | null
 					/**
 					 * False when no embedding model is starred, the session has
 					 * ≤ 10 messages, or its lorebook has no entries.
@@ -15451,8 +17594,10 @@ declare global {
 					| "location"
 					/** 🚧 This session's layer over a location, by the same entry id. */
 					| "session_location"
-					/** 🚧 A card-less player seat, by `session_personas.id` (`player-seat:<id>`). */
+					/** 🚧 A player seat, by `session_personas.id` (`player-seat:<id>`): from the flip every player seat, carded or card-less; before it, card-less only. */
 					| "player_seat"
+					/** 🚧 A seated cast member, by `lorebook_bindings.id` — stored as the seat's owner from the flip (ledger rows and held changes); ⏳ `session_cast` rows written before it stay until S5. */
+					| "seated_member"
 				id: number
 			}
 
@@ -15486,7 +17631,7 @@ declare global {
 				 * to move the session's story clock forward, payload `{ kind:
 				 * 'clock', by, unit }`; no owner, no slot, never superseded.
 				 */
-				kind: "value" | "clock"
+				kind: "value" | "clock" | "library"
 				payload: Record<string, unknown>
 				status: "pending" | "accepted" | "rejected" | "superseded"
 				proposedBy: string
@@ -15572,11 +17717,20 @@ declare global {
 			 * where the two would disagree.
 			 */
 			interface StateOwnerRow {
-				/** `world`, a cast member's or card-less player seat's slug, or 🚧 `location:<slug>` (phase 4). */
+				/** `world`, a character seat's name slug, 🚧 a player seat's `player_seat:<id>` (a carded one's too, from the flip; ⏳ its name slug before), or 🚧 `location:<slug>` (phase 4). A key is opaque: match on `ref`, or on `kind` + `id`. */
 				key: string
-				kind: "session" | "session_cast" | "player_seat" | "session_location"
+				kind:
+					| "session"
+					| "session_cast"
+					| "seated_member"
+					| "player_seat"
+					| "session_location"
 				id: number
 				label: string
+				/** 🚧 The seat's participant reference, host-filled on `seated_member`, `player_seat` and ⏳ `session_cast` owners (plan §27 S3): `seated-member:<castMemberId>` / `player-seat:<id>` from the flip; ⏳ `character:<cardId>` before. A consumer matches on it, never builds it. */
+				ref?: string
+				/** 🚧 The seat's cast member (host-filled on `seated_member`, `player_seat` and ⏳ `session_cast` owners, S3); null when the seat stores none. A member may hold both a character seat and a player seat, so match a seat on `ref`, never on this alone. */
+				castMemberId?: number | null
 				/**
 				 * 🚧 Whether the caller may write this owner's values — false
 				 * on another player's seat (2026-10-16). Absent: writable.
@@ -15588,6 +17742,12 @@ declare global {
 				 * `owners: 'mine'`). Absent on everyone else's.
 				 */
 				mine?: boolean
+				/**
+				 * 🚧 Only on an AI character seat the caller seated (and is not the
+				 * session's owner): `true` while this connection reads that seat's
+				 * holder-only values, `false` while it may. Absent everywhere else.
+				 */
+				showingHiddenStats?: boolean
 				/**
 				 * 🚧 A player seat (2026-10-18, `SessionStateOwnerV1.seat`): a
 				 * card-less seat, or a card seated as one — never a companion.
@@ -15627,6 +17787,11 @@ declare global {
 				 */
 				configs: Record<string, Record<string, unknown>>
 				/**
+				 * 🚧 The slots the caller's hand may not set, each with the sentence that says why
+				 * (`SessionStateOwnerV1.handLocked`; plan §25 B). Only present when non-empty.
+				 */
+				handLocked?: Record<string, string>
+				/**
 				 * 🚧 Each repertoire this owner's list stats hold, by address:
 				 * its name and piece shape (`SessionStateOwnerV1.repertoires`).
 				 */
@@ -15647,12 +17812,24 @@ declare global {
 				 * rows). 🚧 `clock` — a move of the session's story clock
 				 * (live scenes §15 G5): `clock` carries it, on the world.
 				 */
-				kind: "value" | "clock"
+				kind: "value" | "clock" | "library"
 				messageId: number | null
 				ownerKey: string
 				ownerLabel: string
 				updatedBy: string
 				createdAt: string
+				/** 🚧 `library` rows: what was made or changed, and its name. */
+				library?: {
+					/* ⏳ `attach-lorebook` is an op 0.6 never writes; `ledgerLines` still reads old rows that carry it, so it stays. */
+					op:
+						| "create-character"
+						| "update-character"
+						| "create-lorebook"
+						| "attach-lorebook"
+					label: string
+					/** 🚧 Nothing was made, and why (the person's library write mode is Off). */
+					skipped?: string
+				}
 				/** Value rows. */
 				slotId?: string
 				slotLabel?: string
@@ -15690,6 +17867,8 @@ declare global {
 				to?: import("@serene-pub/core-catalog/session-state").StoryTimeParts | null
 				/** The sentence a skipped move left; null when the clock moved. */
 				skipped: string | null
+				/** Why it was skipped; absent from a host that predates it (read through `clockSkipKindOf`). */
+				reason?: "no-clock" | "refused" | null
 			}
 
 			/** What one slot read before this session first touched it. */
@@ -15702,6 +17881,13 @@ declare global {
 			namespace Get {
 				interface Params {
 					sessionId: number
+					/**
+					 * 🚧 The AI character seats the caller asks to read the holder-only
+					 * values of (`seated-member:<memberId>`), replacing this connection's
+					 * set for the session. Present (even `[]`) replaces; absent leaves it.
+					 * Refs for seats the caller did not seat are dropped.
+					 */
+					showHiddenStats?: string[]
 				}
 				interface Response {
 					sessionId: number
@@ -15746,7 +17932,15 @@ declare global {
 			namespace SetOwnerFace {
 				interface Params {
 					sessionId: number
-					owner: { kind: "session" | "session_cast" | "player_seat" | "session_location"; id: number }
+					owner: {
+						kind:
+							| "session"
+							| "session_cast"
+							| "seated_member"
+							| "player_seat"
+							| "session_location"
+						id: number
+					}
 					/** A file's id (or uuid); null clears it. */
 					mediaRef: string | null
 					/** The ask's own token, echoed on its reply and its refusal. */
@@ -15859,7 +18053,15 @@ declare global {
 					holders: CarryHolder[]
 				}
 				interface CarryHolder {
-					owner: { kind: "session" | "session_cast" | "player_seat" | "session_location"; id: number }
+					owner: {
+						kind:
+							| "session"
+							| "session_cast"
+							| "seated_member"
+							| "player_seat"
+							| "session_location"
+						id: number
+					}
 					name: string
 					carries: boolean
 					/** The caller may switch it: whoever plays the holder, or the session's owner. */
@@ -15877,7 +18079,15 @@ declare global {
 			namespace SetCarry {
 				interface Params {
 					sessionId: number
-					owner: { kind: "session" | "session_cast" | "player_seat" | "session_location"; id: number }
+					owner: {
+						kind:
+							| "session"
+							| "session_cast"
+							| "seated_member"
+							| "player_seat"
+							| "session_location"
+						id: number
+					}
 					slotId: string
 					carries: boolean
 					/** 🚧 The ask's own token (RF fix 8: the sheet's `set-attribute-carry`), echoed on its reply and its refusal. */
@@ -16417,6 +18627,146 @@ declare global {
 				}
 				type Response = AvailableSheet & { requestId?: string }
 				type ErrorResponse = DeclareSlot.ErrorResponse
+			}
+		}
+
+		/** 🚧 The voicebank (speech build seam S4). Admin-gated except `pickable`. */
+		namespace Voicebank {
+			type View = import("$lib/shared/speech/voicebank").VoicebankVoiceView
+			type Input = import("$lib/shared/speech/voicebank").VoicebankVoiceInput
+
+			namespace List {
+				type Params = Record<string, never>
+				interface Response {
+					voices: View[]
+					/** The default speaking loadout's model (a new voice starts on its loadout); null when unfilled. */
+					pairModelId: number | null
+					/** 🚧 The `text->audio` loadouts a voice may speak through (the entry form's Loadout picker). */
+					loadouts: import("$lib/shared/speech/voicebank").VoicebankLoadoutOption[]
+				}
+			}
+			namespace Create {
+				interface Params {
+					voice: Input
+				}
+				interface Response {
+					voice: View
+				}
+			}
+			namespace Update {
+				interface Params {
+					id: number
+					voice: Partial<Input>
+				}
+				interface Response {
+					voice: View
+				}
+			}
+			namespace Delete {
+				interface Params {
+					id: number
+				}
+				interface Response {
+					id: number
+				}
+			}
+			namespace Pickable {
+				type Params = Record<string, never>
+				interface Response {
+					voices: import("$lib/shared/speech/voicebank").VoicebankPickableVoice[]
+					/**
+					 * 🚧 The DEFAULT speaking loadout's model's controls the voice
+					 * try-out needs (`designsVoice`: the seed picks the person;
+					 * `instruction`: an inflection can be tried). Null when no
+					 * model speaks yet. Each voice's own: `voices[].controls`.
+					 */
+					controls?: Pick<
+						import("$lib/shared/connectionAdapters/speechFacts").SpeechControls,
+						"designsVoice" | "instruction"
+					> | null
+				}
+			}
+			/**
+			 * 🚧 The **voice try-out** (`server/speech/preview.ts` `previewVoice`):
+			 * one short line spoken on the speaking pair with the overrides
+			 * given, returned inline, stored nowhere. Any signed-in person; a
+			 * non-administrator may send only `text`, `description`,
+			 * `language`, `settings.seed` and `inflection` (A1: members do not
+			 * pick voices — their try uses the pub's default voice). One try in
+			 * flight per person; 60 s ceiling. Refusals answer
+			 * `voicebank:preview:error` with the `requestId` echoed.
+			 */
+			namespace Preview {
+				interface Params {
+					/** Echoed on the reply and the refusal, so the asking control claims its own. */
+					requestId: string
+					/** The line; blank speaks `VOICE_TRYOUT_SAMPLE_LINE`. At most `VOICE_TRYOUT_TEXT_MAX` characters. */
+					text?: string
+					/** Admins: a voicebank entry by slug (as a card's timbre names one). */
+					voice?: string | null
+					/** Admins: a service voice id on the speaking model, unsaved (the voicebank form's draft). */
+					voiceId?: string
+					/**
+					 * 🚧 Admins: the loadout an unsaved voicebank draft speaks
+					 * through. Absent: the resolved voice's loadout, else the
+					 * speaking loadout.
+					 */
+					loadoutId?: number | null
+					/** The timbre description to try with (the direction, where the model takes prose). */
+					description?: string | null
+					/** ISO 639-1; blank: the chain's. */
+					language?: string | null
+					/** The settings to try with; a non-administrator's are reduced to `seed`. */
+					settings?: import("$lib/shared/speech/voicebank").VoicebankSettings
+					/** An `INFLECTION_LABELS` label; sent only where the model takes prose and does not design its voice. */
+					inflection?: string | null
+				}
+				interface Response {
+					requestId: string
+					/** The clip's media type (`audio/wav`, `audio/mpeg`…). */
+					mime: string
+					/** The clip, base64. */
+					bytes: string
+					durationMs?: number
+					/** The voice and model the service says it spoke with. */
+					spokenAs: { voice: string; model: string } | null
+					/** The seed sent, when one was (a designing model's derived seed included). */
+					seed?: number
+					/** Request keys the service honoured / could not. */
+					applied: string[]
+					ignored: string[]
+					/** Things worth knowing that are not failures ("inflection not sent: …"). */
+					notes: string[]
+				}
+				interface ErrorResponse {
+					error: string
+					requestId?: string
+				}
+			}
+		}
+
+		/** 🚧 The Characters view's rows, one page at a time (plan §34.4); answered to the asking socket only. */
+		namespace Characters {
+			namespace Page {
+				interface Params {
+					/** The `nextCursor` of the page before; absent for the first page. */
+					cursor?: string | null
+					/** Rows wanted; clamped to 1…100, 50 when absent. */
+					limit?: number
+					filters?: import("$lib/shared/characters/characterRows").CharacterRowsFilters
+					/** Echoed on the reply and on `characters:page:error`. */
+					requestId: string
+				}
+				interface Response {
+					rows: import("$lib/shared/characters/characterRows").CharacterRow[]
+					/** Null when there are no more rows. */
+					nextCursor: string | null
+					requestId: string
+				}
+				interface ErrorResponse {
+					error: string
+					requestId?: string
+				}
 			}
 		}
 

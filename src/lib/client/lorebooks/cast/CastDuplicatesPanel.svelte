@@ -7,7 +7,7 @@
 		useInterest
 	} from "$lib/client/sockets/interest.svelte"
 	import { interestKey } from "$lib/shared/sockets/interest"
-	import { toaster } from "$lib/client/utils/toaster"
+	import { notify } from "$lib/client/utils/notify"
 	import {
 		absorbCastMember,
 		notAbsorbedTitle,
@@ -84,8 +84,8 @@
 		if (undoing.delete(msg.mergeLogId)) {
 			const toast = undoMergeToast(msg)
 			const shown = { title: toast.title, description: toast.description }
-			if (toast.kind === "warning") toaster.warning(shown)
-			else toaster.success(shown)
+			if (toast.kind === "warning") notify.warning(shown)
+			else notify.success(shown)
 		}
 		fetchAll()
 	}
@@ -114,18 +114,21 @@
 		absorbCastMember(socket, {
 			nodeId: candidate.bindingIdA,
 			parentNodeId: candidate.bindingIdB
-		}).then((res) => {
-			toaster.success({
-				title: "Absorbed",
-				description: `Merged into "${res.survivorNode.name}". Undo from Recent merges if this was a mistake.`
-			})
-		}, (err: unknown) => {
-			toaster.error({
-				title: notAbsorbedTitle(candidate.nameA),
-				description: err instanceof Error ? err.message : undefined
-			})
-			if (!gone) fetchAll()
-		})
+		}).then(
+			(res) => {
+				notify.success({
+					title: "Absorbed",
+					description: `Merged into "${res.survivorNode.name}". Undo from Recent merges if this was a mistake.`
+				})
+			},
+			(err: unknown) => {
+				notify.error({
+					title: notAbsorbedTitle(candidate.nameA),
+					description: err instanceof Error ? err.message : undefined
+				})
+				if (!gone) fetchAll()
+			}
+		)
 		// Optimistic: the server re-emits its own candidate list after the
 		// merge and corrects this if anything is off.
 		candidates = candidates.filter((c) => c !== candidate)
@@ -236,7 +239,7 @@
 				<div class="mt-2 flex flex-col gap-1.5">
 					{#each mergeLogs as log (log.id)}
 						<div
-							class="panel-edge flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs"
+							class="bg-surface-100-900 flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-xs"
 						>
 							<span class="text-surface-600-400 min-w-0">
 								"{log.absorbedName}" absorbed into "{log.survivorName ??

@@ -46,6 +46,14 @@ export type InterestScopeExtractor = (
 ) => string | number | null | undefined
 
 /**
+ * 🚧 The scope of a gallery or sprite reply: the card's `characterId`, or
+ * `member:<castMemberId>` when the reply is a cast member's.
+ */
+const ownerScope: InterestScopeExtractor = (payload) =>
+	payload?.characterId ??
+	(payload?.castMemberId != null ? `member:${payload.castMemberId}` : null)
+
+/**
  * Where each scoped event's **interest scope** lives in its payload.
  *
  * This is the ONE extractor both sides use: the client fans a payload out to
@@ -117,6 +125,10 @@ export const SCOPED_EVENTS: ReadonlyMap<string, InterestScopeExtractor> =
 		// (R-19). The sessions sidebar declares it BARE (every session it
 		// lists); a session page may declare its own scope.
 		["sessions:runStatus", (payload) => payload?.sessionId],
+		// 🚧 M2a a6: `{ sessionId, runId, outcome, reason? }` — the run a press
+		// started has ended; the session page relays it to its frames
+		// (`run:ended`). Scoped to the session.
+		["sessions:runEnded", (payload) => payload?.sessionId],
 
 		// `{ sessionId, messageCount, lastMessage, updatedAt }` — the session's
 		// list row moved. The sessions sidebar and the home page both declare
@@ -132,6 +144,8 @@ export const SCOPED_EVENTS: ReadonlyMap<string, InterestScopeExtractor> =
 
 		// `{ sessionId, annex }` — the viewer's own annex view (R57).
 		["sessions:annex", (payload) => payload?.sessionId],
+		// 🚧 M0 (L9): `{ sessionId, annex }` — the viewer's lorebook-annex view.
+		["sessions:lorebookAnnex", (payload) => payload?.sessionId],
 
 		// 🚧 `{ sessionId, backdropMediaId }` — the session's backdrop moved
 		// (a pipeline's `set-backdrop` or a person's `sessions:setBackdrop`).
@@ -173,6 +187,12 @@ export const SCOPED_EVENTS: ReadonlyMap<string, InterestScopeExtractor> =
 		// scope, so a tab on another session is neither sent this one's list
 		// nor has one built for it.
 		["sessions:actions", (payload) => payload?.sessionId],
+		// 🚧 Stage B (sense-b2): the "This session only" card's two lists. A
+		// pressed or automatic Apply and a take-back re-send both to every
+		// member of the session, each with that member's `mayApply`; the
+		// payload's `sessionId` is the scope.
+		["sessions:overlayItems", (payload) => payload?.sessionId],
+		["sessions:appliedBatches", (payload) => payload?.sessionId],
 
 		// The run's progress card, pushed from three places — the reply path
 		// (`server/utils/runReply.ts`: one `runStarted`, then a
@@ -191,21 +211,23 @@ export const SCOPED_EVENTS: ReadonlyMap<string, InterestScopeExtractor> =
 			"characters:get",
 			(payload) => payload?.character?.id ?? payload?.characterId
 		],
-		// Gallery replies and cascades carry the owner id top-level.
-		["characters:listGallery", (payload) => payload?.characterId],
-		["characters:uploadGalleryImage", (payload) => payload?.characterId],
-		["characters:deleteGalleryImage", (payload) => payload?.characterId],
-		// Sprites: every reply and cascade carries the owner id top-level.
-		["characters:listSprites", (payload) => payload?.characterId],
-		["characters:createSpriteSet", (payload) => payload?.characterId],
-		["characters:updateSpriteSet", (payload) => payload?.characterId],
-		["characters:deleteSpriteSet", (payload) => payload?.characterId],
-		["characters:uploadSprite", (payload) => payload?.characterId],
-		["characters:addStandardSprites", (payload) => payload?.characterId],
-		["characters:updateSprite", (payload) => payload?.characterId],
-		["characters:deleteSprite", (payload) => payload?.characterId],
-		["characters:reorderSprites", (payload) => payload?.characterId],
-		["characters:testSprite", (payload) => payload?.characterId],
+		// Gallery replies and cascades carry the owner id top-level: the card's `characterId`, or a cast
+		// member's `castMemberId` (scoped as `member:<id>`).
+		["characters:listGallery", ownerScope],
+		["characters:uploadGalleryImage", ownerScope],
+		["characters:deleteGalleryImage", ownerScope],
+		// Sprites: every reply and cascade carries the owner id top-level (card or
+		// member, as above).
+		["characters:listSprites", ownerScope],
+		["characters:createSpriteSet", ownerScope],
+		["characters:updateSpriteSet", ownerScope],
+		["characters:deleteSpriteSet", ownerScope],
+		["characters:uploadSprite", ownerScope],
+		["characters:addStandardSprites", ownerScope],
+		["characters:updateSprite", ownerScope],
+		["characters:deleteSprite", ownerScope],
+		["characters:reorderSprites", ownerScope],
+		["characters:testSprite", ownerScope],
 		// 🚧 Fill empty sprites (I5): the form preview, the start ack and
 		// the run's progress pushes all carry the card's id top-level.
 		["characters:previewSpriteFill", (payload) => payload?.characterId],
@@ -250,6 +272,11 @@ export const SCOPED_EVENTS: ReadonlyMap<string, InterestScopeExtractor> =
 		// eight verbs sat here and in `GATED_EVENTS` until 2026-09-28: names
 		// nothing emits.)
 		["amendments:list", (payload) => payload?.lorebookId],
+		// 🚧 Update ‹member› to card ‹label› (lane cv-member2): `lorebookId` top-level.
+		[
+			"lorebooks:updateMemberToCardVersion",
+			(payload) => payload?.lorebookId
+		],
 		["entries:counts", (payload) => payload?.lorebookId],
 		// 🚧 A book's rules lists and its rules library (PLAN-lorebook-kinds
 		// §C): `lorebookId` top-level on every reply.
@@ -319,6 +346,10 @@ export const SCOPED_EVENTS: ReadonlyMap<string, InterestScopeExtractor> =
 		],
 		["narrativeGraph:listMergeLogs", (payload) => payload?.lorebookId],
 		["vectorization:itemUpdated", (payload) => payload?.lorebookId],
+		// The indexing notice's status (`RagNotice.svelte`): `sessionId`
+		// top-level on every arm, so one session's reply never settles the
+		// notice of another (playtest item 8).
+		["vectorization:checkRagStatus", (payload) => payload?.sessionId],
 		// `{ id, uuid, rev, frame }` — the media row that changed.
 		["media:changed", (payload) => payload?.id],
 		// The admin plugins page opens one plugin's panel at a time.
@@ -456,6 +487,7 @@ export const RESTRICTED_INTEREST_PREFIXES: readonly string[] = [
 	"tunnels:",
 	"allowedHosts:",
 	"invites:",
+	"audiocpp:",
 	"koboldcpp:",
 	"ollama:",
 	"ner:",
@@ -492,6 +524,26 @@ export const RESTRICTED_INTEREST_PREFIXES: readonly string[] = [
 export function isRestrictedInterest(key: InterestKey): boolean {
 	return RESTRICTED_INTEREST_PREFIXES.some((p) => key.startsWith(p))
 }
+
+/**
+ * 🚧 (M2b/M2c) The **applet API**'s answers — the person-facing doors behind an
+ * applet's `user-annex` and library requests (`sockets/userAnnex.ts`,
+ * `appletLibrary.ts`, `appletSessions.ts`). Any signed-in person asks them:
+ * each handler resolves the person from the socket and narrows by the plugin's
+ * grant and `personMay`. So the family is NOT under a restricted prefix — the
+ * way `pluginActions:` / `pluginCatalogs:` / `pluginUserSettings:` sit outside
+ * the admin-only `plugins:` (they were `plugins:*` until E's M2c gate found a
+ * non-admin's frame never heard its answer). Their `:error` siblings likewise.
+ * ⚠ Not the `applet:<what>:<level>` permission keys (a manifest's grants).
+ */
+export const APPLET_API_EVENTS = Object.freeze([
+	"appletApi:userAnnex",
+	"appletApi:libraryCharacters",
+	"appletApi:updateCharacter",
+	"appletApi:libraryLorebooks",
+	"appletApi:librarySessions",
+	"appletApi:updateSession"
+] as const)
 
 /**
  * Events the interest gate applies to. Everything NOT listed keeps the room
@@ -594,6 +646,9 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	// The viewer's annex view (R57, V1c) — consumer: the session page,
 	// SCOPED, which hands it to its widgets as `annex.v1`.
 	"sessions:annex",
+	// 🚧 M0 (L9) — consumer: the session page, SCOPED, which hands it to its
+	// widgets as `lore.v1.annex`.
+	"sessions:lorebookAnnex",
 	// The session data panel's read — consumer: client/components/
 	// sessionForms/SessionAnnexPanel.svelte, SCOPED. Its `:error` twin is
 	// never gated.
@@ -616,11 +671,16 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	// 🚧 The overlay review (§26) — consumer: SessionViewPanel's changes card.
 	"sessions:overlayItems",
 	"sessions:applyOverlay",
+	// 🚧 Stage B (sense-b2): what was applied from this session, and taking
+	// one Apply back — consumer: SessionViewPanel's changes card.
+	// `sessions:appliedBatches` is SCOPED (see SCOPED_EVENTS).
+	"sessions:appliedBatches",
+	"sessions:takeBackApply",
 	// 🚧 pr-6 (B §B-4): Share as a lorebook (replaces createLorebookFromPhantom)
-	// and Clone with changes and attach — consumers: the Session notes row's ⋯,
+	// and Merge ‹book› into these notes — consumers: the Session notes row's ⋯,
 	// SessionViewPanel's ⋯, EditSessionForm's notes button. Bare, not scoped.
 	"sessions:shareAsLorebook",
-	"sessions:cloneWithChanges",
+	"sessions:foldInParent",
 	// 🚧 pr-6 (B §B-5, §B-6): Archive / Unarchive / Close out — consumer:
 	// SessionViewPanel's ⋯; Close out also the session page's catch-up notice.
 	// Bare, not scoped.
@@ -689,11 +749,12 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	// client/components/sidebars/SessionsSidebar.svelte, on the registry, and
 	// the session page's inbox, SCOPED (its waiting row, `pendingReply.ts`).
 	"sessions:runStatus",
+	// 🚧 M2a a6 — the end of a press's run, with its outcome: the session page relays it to frames as `run:ended` (U's client half).
+	"sessions:runEnded",
 	"sessions:saveDraft",
 	"sessions:setCastSeatEnabled",
 	"sessions:setEnvoySeat",
 	"sessions:setFunction",
-	"sessions:setLorebook",
 	"sessions:sideCharacterOptions",
 	"sessions:summarize",
 	"sessions:summarize:complete",
@@ -732,11 +793,11 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"pipelines:capPauseRequested",
 	"pipelines:capPauses",
 	"pipelines:catalogue",
+	"pipelines:clearLeftoverPick",
 	"pipelines:clearOption",
 	"pipelines:cloneContextTemplate",
 	"pipelines:clonePrompt",
 	"pipelines:cloneScript",
-	"pipelines:cloneVariableTemplate",
 	"pipelines:composite:delete",
 	"pipelines:composite:save",
 	"pipelines:createContextTemplate",
@@ -745,7 +806,6 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"pipelines:deleteContextTemplate",
 	"pipelines:deletePrompt",
 	"pipelines:deleteScript",
-	"pipelines:deleteVariableTemplate",
 	"pipelines:detail",
 	"pipelines:document",
 	"pipelines:draft:get",
@@ -758,16 +818,23 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"pipelines:fork",
 	"pipelines:get",
 	"pipelines:importScripts",
+	"pipelines:leftoverPicks",
 	"pipelines:library",
 	"pipelines:libraryClonePrompt",
 	"pipelines:libraryCloneTemplate",
 	"pipelines:libraryCreateTemplate",
 	"pipelines:libraryDeletePrompt",
 	"pipelines:libraryDeleteTemplate",
+	"pipelines:librarySetPubLayout",
 	"pipelines:libraryUpdatePrompt",
 	"pipelines:libraryUpdateTemplate",
+	"pipelines:libraryUseEverywhereCounts",
+	"pipelines:libraryVariable",
+	"pipelines:libraryVariables",
 	"pipelines:list",
 	"pipelines:messageExplain",
+	"pipelines:moveLeftoversIntoTemplate",
+	"pipelines:presetVariableLayouts",
 	"pipelines:previewRetrieval",
 	"pipelines:previewTemplate",
 	"pipelines:progress",
@@ -785,10 +852,12 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"pipelines:sessionEntryUsage",
 	"pipelines:setOption",
 	"pipelines:setOptions",
+	"pipelines:setPresetVariableLayout",
+	"pipelines:stampVariableTemplateReference",
+	"pipelines:templateVariableLayouts",
 	"pipelines:updateContextTemplate",
 	"pipelines:updatePrompt",
 	"pipelines:updateScript",
-	"pipelines:updateVariableTemplate",
 	"pipelines:validateTemplate",
 
 	// characters: / characterFolders: / tags: / cardSources: — slice 4
@@ -813,6 +882,8 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"characterFolders:delete",
 	"characterFolders:list",
 	"characterFolders:update",
+	// characters:page — consumers: none yet (the Characters view, plan §34.4 wave 6, on the client registry). Answered to the asking socket only (sockets/characterRows.ts replyToAsker).
+	"characters:page",
 	"characters:create",
 	"characters:delete",
 	"characters:deleteGalleryImage",
@@ -919,6 +990,10 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"lorebooks:storyTime",
 	"lorebooks:update",
 	"lorebooks:updateBinding",
+	// 🚧 lane cv-member2 — consumers: client/lorebooks/CastWorkspace.svelte
+	// (the member page's Update offer) and client/components/characterForms/
+	// CastLine.svelte, through `awaitReply`.
+	"lorebooks:updateMemberToCardVersion",
 	"lorebooks:uploadMemberFace",
 	// 🚧 Starter lorebooks (PLAN-lorebook-kinds §B) — consumers: the New lorebook
 	// kit picker, the session start form, Admin › Starter lorebooks (lane K2).
@@ -953,8 +1028,12 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"media:list",
 	"media:regenerateThumbnail",
 	"media:setCachePolicy",
+	// Lane E's admin Media panel folded row + session media; born gated 2026-10-28.
+	"media:setKeepSpokenAudio",
 	"media:setFrame",
 	"media:setVisibility",
+	"media:clearSpoken",
+	"media:spokenSummary",
 	"narrativeGraph:applyProposal",
 	"narrativeGraph:buildLog",
 	"narrativeGraph:checkNodeMergeReferences",
@@ -1062,12 +1141,13 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"invites:list",
 	"invites:revoke",
 	"plugins:abort",
+	"plugins:disableProvidedBook",
+	"plugins:enableProvidedBook",
 	"plugins:active",
 	"plugins:exportPackage",
 	"plugins:getSettings",
 	"plugins:install",
 	"plugins:installLocal",
-	"plugins:installPackage",
 	"plugins:kill",
 	"plugins:list",
 	"plugins:logs",
@@ -1085,6 +1165,13 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	// `plugins:` prefix — every signed-in person reads and writes their own.
 	// Consumer: client/components/settingsTabs/PluginUserSettingsCard.svelte.
 	"pluginUserSettings:list",
+	// 🚧 M0 (SHAPES L12 Seams, L5): plugin actions and catalogs — NOT
+	// under the restricted `plugins:` prefix; any signed-in person. Gated so a
+	// handler's answer (a file's bytes) reaches only the tab awaiting it.
+	// Consumers: client/components/frames/pluginActions.ts (`awaitReply`),
+	// client/components/frames/pluginCatalogs.svelte.ts. Refusals stay ungated (rule 1).
+	"pluginActions:invoke",
+	"pluginCatalogs:get",
 	"samplingConfigs:create",
 	"samplingConfigs:delete",
 	"samplingConfigs:get",
@@ -1126,8 +1213,10 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"userSettings:updateEasyCharacterCreation",
 	"userSettings:updateLanguage",
 	"userSettings:updateLoreWriteMode",
+	"userSettings:updateShowAdvancedControls",
 	"userSettings:updateShowAllCharacterFields",
 	"userSettings:updateShowHomePageBanner",
+	"userSettings:updateSpokenPlayback",
 	"userSettings:updateTheme",
 	"userSettings:uploadBackground",
 	"users:create",
@@ -1154,6 +1243,12 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	// It is also the one gated event whose cost is a broadcast rather than a
 	// reply: `broadcastToSessionUsers` reads the owner and the guest roster —
 	// two queries — for every chunk, so the gate is applied BEFORE them.
+	"models:presence",
+	"models:machineHardware",
+	"models:refreshSpeech",
+	// shelf-B 2026-11-08: one consumer, `ModelFinderView.svelte` (the finder
+	// model page), on the registry from its first line.
+	"models:hubCard",
 	"sessionMessage",
 
 	// Slice 8 (2026-09-15): the connections group, deferred until the
@@ -1207,6 +1302,34 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	// the handler is admin-only.
 	"admin:logbook",
 	"admin:supportReport",
+	// 🚧 lane cv-member2 — client/admin/sections/data (the upgrade's lifted
+	// cast members). Restricted prefix; both handlers admin-only.
+	"admin:castLiftNotes",
+	"admin:castLiftFollowGreetings",
+	// `audiocpp:` — 🚧 audio.cpp, run by Serene Pub; every handler admin-only.
+	// The three pushes (`binaryDownloadProgress`, `packageDownloadProgress`,
+	// `subprocessStatus`) leave through per-user closures that call the gated
+	// `emitToUser`, like the `koboldcpp:` ones.
+	"audiocpp:binaryDownloadProgress",
+	"audiocpp:cancelBinaryDownload",
+	"audiocpp:cancelPackageDownload",
+	"audiocpp:confirmFamily",
+	"audiocpp:downloadBinary",
+	"audiocpp:downloadPackage",
+	"audiocpp:getSettings",
+	"audiocpp:getStatus",
+	"audiocpp:installState",
+	"audiocpp:listBinaryVariants",
+	"audiocpp:listPackages",
+	"audiocpp:listReleaseVersions",
+	"audiocpp:packageDownloadProgress",
+	"audiocpp:removePackage",
+	"audiocpp:restart",
+	"audiocpp:setPackageEnabled",
+	"audiocpp:start",
+	"audiocpp:stop",
+	"audiocpp:subprocessStatus",
+	"audiocpp:updateSettings",
 	// `koboldcpp:` — client/components/koboldcppManager/**,
 	// connections/ManagedConnectionView (the managed connection's view since
 	// the 2026-09-17 fold), routes/document-view/settings/system
@@ -1378,7 +1501,17 @@ export const GATED_EVENTS: ReadonlySet<string> = new Set<string>([
 	"cardState:declareSlot",
 	"cardState:updateSlot",
 	"cardState:declareSheet",
-	"cardState:updateSheet"
+	"cardState:updateSheet",
+
+	// voicebank — born gated 2026-10-28; consumers: lane E's admin Voices panel
+	// and the card's Voice picker, on the registry.
+	"voicebank:list",
+	"voicebank:create",
+	"voicebank:update",
+	"voicebank:delete",
+	"voicebank:pickable",
+	// the voice try-out (2026-10-29): the card's Speech tab and the voicebank form
+	"voicebank:preview"
 ])
 
 export function isGatedEvent(event: string): boolean {

@@ -35,16 +35,40 @@ const finder = (props: Record<string, unknown> = {}) =>
 	}).body
 
 describe("the model finder", () => {
-	test("asks its four questions in order", () => {
+	test("asks its questions in order: the box, then one sentence", () => {
 		const html = finder()
 		expect(html).toContain("Get a model")
 		expect(html).toContain("Search recommended and Hugging Face")
-		expect(html).toContain(">For<")
-		expect(html).toContain("Download to")
+		expect(html).toContain('aria-label="For: Chat"')
+		expect(html).toContain("<span>models</span>")
+		// With no connections there is no destination, but the tier part stays:
+		// the header's Change memory tier always has a trigger on screen.
+		expect(html).not.toContain("Download to: ")
+		expect(html).toContain("sized for")
 		// The four scopes, always all four — the pills are how a person who
 		// arrived from the wrong door corrects it.
-		for (const label of ["Chat", "Images", "Embeddings", "Entities"])
+		for (const label of [
+			"Chat",
+			"Images",
+			"Embeddings",
+			"Entities",
+			"Speech",
+			"Transcription"
+		])
 			expect(html).toContain(label)
+	})
+
+	test("standing alone it is a pane: a heading and Back, no dialog", () => {
+		const html = finder()
+		expect(html).toMatch(/<h2[^>]*>Get a model/)
+		expect(html).toContain('aria-label="Back"')
+		// (The memory-tier popover is a hidden `role="dialog"` of its own.)
+		expect(html).not.toContain('data-scope="dialog"')
+	})
+
+	test("embedded draws no Get a model heading of its own", () => {
+		const html = finder({ embedded: true })
+		expect(html).not.toContain("Get a model")
 	})
 
 	test("with no connections, it says so rather than listing nothing", () => {
@@ -53,17 +77,96 @@ describe("the model finder", () => {
 		expect(html).toContain("Add KoboldCPP, run by Serene Pub")
 	})
 
-	test("a local modality names the door instead of offering a manager", () => {
+	test("a local modality has no door to name: the app makes its connection", () => {
 		const html = finder({ capability: "text->embedding" })
 		expect(html).toContain("Nothing here can hold an embeddings model yet.")
 		expect(html).not.toContain("Add KoboldCPP, run by Serene Pub")
-		expect(html).toContain("Add → A connection")
+		expect(html).not.toContain("A connection")
 	})
 
-	test("the memory tier is named and changeable even with no destination", () => {
+	test("Speech with nothing to hold it offers audio.cpp and KoboldCPP", () => {
+		const html = finder({ capability: "text->audio" })
+		expect(html).toContain("Nothing here can hold a speech model yet.")
+		expect(html).toContain("Add audio.cpp, run by Serene Pub")
+		expect(html).toContain("Add KoboldCPP, run by Serene Pub")
+	})
+
+	test("Transcription offers only audio.cpp", () => {
+		const html = finder({ capability: "audio->text" })
+		expect(html).toContain(
+			"Nothing here can hold a transcription model yet."
+		)
+		expect(html).toContain("Add audio.cpp, run by Serene Pub")
+		expect(html).not.toContain("Add KoboldCPP, run by Serene Pub")
+	})
+
+	test("two destinations draw the whole sentence", () => {
+		const html = render(ModelFinderView, {
+			props: {},
+			context: new Map([
+				connectionsTestContext([
+					{
+						id: 1,
+						name: "KoboldCPP",
+						type: "koboldcpp_managed"
+					} as any,
+					{ id: 9, name: "Ollama", type: "ollama" } as any
+				])
+			])
+		}).body
+		expect(html).toContain('aria-label="For: Chat"')
+		expect(html).toContain('aria-label="Download to: Ollama"')
+		expect(html).toContain('aria-label="Memory tier: Not sure"')
+		expect(html).toContain("models for")
+		expect(html).toContain("sized for")
+	})
+
+	test("a single destination is plain text, not a trigger", () => {
+		const html = render(ModelFinderView, {
+			props: {},
+			context: new Map([
+				connectionsTestContext([
+					{
+						id: 1,
+						name: "KoboldCPP",
+						type: "koboldcpp_managed"
+					} as any
+				])
+			])
+		}).body
+		expect(html).not.toContain("Download to: ")
+		expect(html).toContain("KoboldCPP")
+		expect(html).toContain('aria-label="Memory tier: Not sure"')
+	})
+
+	test("embedded shows the scope as plain text, no For trigger", () => {
+		const html = finder({ embedded: true })
+		expect(html).not.toContain("For: ")
+		expect(html).toContain("Chat")
+	})
+
+	test("a connection narrows the For options but keeps the destination", () => {
+		const html = render(ModelFinderView, {
+			props: { connectionId: 1 },
+			context: new Map([
+				connectionsTestContext([
+					{
+						id: 1,
+						name: "KoboldCPP",
+						type: "koboldcpp_managed"
+					} as any
+				])
+			])
+		}).body
+		expect(html).toContain("Speech")
+		expect(html).not.toContain("Embeddings")
+		expect(html).not.toContain("Transcription")
+	})
+
+	test("with no destination the sentence is the scope, models and the tier", () => {
 		const html = finder()
-		expect(html).toContain("Not sure tier")
-		expect(html).toContain("Change")
+		expect(html).toContain("Memory tier: Not sure")
+		expect(html).not.toContain("models for")
 	})
 
 	test("an unknown capability falls back to chat rather than nothing", () => {
@@ -153,7 +256,6 @@ describe("the quant picker", () => {
 	test("renders its rows, the recommended chip and the fit", () => {
 		const html = render(QuantPicker, {
 			props: {
-				open: true,
 				repo: "TheBloke/Mistral-7B-GGUF",
 				quants: [
 					{
@@ -189,7 +291,6 @@ describe("the quant picker", () => {
 	test("Not sure suppresses every fit hint", () => {
 		const html = render(QuantPicker, {
 			props: {
-				open: true,
 				repo: "TheBloke/Mistral-7B-GGUF",
 				quants: [
 					{ name: "Q4_K_M", bytes: 4_000_000_000, recommended: true }

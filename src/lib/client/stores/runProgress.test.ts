@@ -185,4 +185,46 @@ describe("runProgress", () => {
 			status: null
 		})
 	})
+
+	test("a stage's message does not outlive the stage", () => {
+		// The loader's sentence came with `loading`; a `sampling` frame that
+		// says nothing has outgrown it (a KoboldCPP render read "sampling ·
+		// 0% · Loading the image model…" for three minutes, 2026-11-08). A
+		// frame of the SAME stage without a message keeps it — the poller
+		// repeats its stage every tick.
+		runProgress.started({ runId: "r1", sessionId: SESSION, label: "image" })
+		runProgress.apply({ runId: "r1", stage: "loading", percent: 0, message: "Loading the image model…" })
+		runProgress.apply({ runId: "r1", stage: "loading", percent: 0 })
+		expect(runProgress.get("r1")?.message).toBe("Loading the image model…")
+		runProgress.apply({ runId: "r1", stage: "sampling", percent: 0 })
+		expect(runProgress.get("r1")?.message).toBeUndefined()
+		expect(runProgress.get("r1")).toMatchObject({ stage: "sampling", label: "image" })
+	})
+
+	/**
+	 * 🚧 Speech polish (owner ruling 2026-10-29): a speak-message run shows on
+	 * its own line only — the card listed it as *Read Aloud · Speaking*. Its
+	 * frames carry `lineBound`, and the store drops them: never in flight,
+	 * never a receipt, and its start or end never retires the receipt the
+	 * card is showing for the reply before it.
+	 */
+	test("a line-bound run (speaking a line) is never listed, never a receipt, and leaves the reply's receipt standing", () => {
+		runProgress.started({ runId: "reply", sessionId: SESSION, label: "respond" })
+		runProgress.apply({ runId: "reply", sessionId: SESSION, done: true, outcome: "ok" })
+
+		runProgress.started({ runId: "speak", sessionId: SESSION, label: "read-aloud", lineBound: true })
+		runProgress.apply({
+			runId: "speak",
+			sessionId: SESSION,
+			nodeKey: "speak",
+			status: { i18n: { en: "Speaking" } },
+			lineBound: true
+		})
+		expect(runProgress.get("speak")).toBeUndefined()
+		expect(runProgress.forSession(SESSION)).toEqual([])
+		expect(runProgress.lastFinished(SESSION)).toMatchObject({ runId: "reply", label: "respond" })
+
+		runProgress.apply({ runId: "speak", sessionId: SESSION, done: true, outcome: "ok", lineBound: true })
+		expect(runProgress.lastFinished(SESSION)).toMatchObject({ runId: "reply", label: "respond" })
+	})
 })

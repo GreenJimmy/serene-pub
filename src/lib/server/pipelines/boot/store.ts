@@ -515,6 +515,49 @@ async function assertSlashNamesFree(
 }
 
 /**
+ * 🚧 **A package's specs its new build does not ship** (2026-10-31): on a
+ * reinstall or upgrade, every spec this package owns that the build does not
+ * publish has its active version marked `retired` — the treatment the boot
+ * gives a definition this build does not publish. The rows stay (the pointer
+ * too), so a session, a receipt or a registration naming the spec still
+ * reads its document by id; what stops is its contribution: the slash-name
+ * and envoy checks (`installedActions`) and every reader of `published`
+ * leave it out. A later build that ships it again republishes it (the pointer
+ * move sets `published`). Returns the slugs it retired. Run before
+ * `assertInstallSlashNamesFree`, so the install is judged on what it ships.
+ */
+export async function retireUnshippedPluginSpecs(
+	db: Db,
+	sourcePluginId: number,
+	shipped: ReadonlySet<string>
+): Promise<string[]> {
+	const owned = await db
+		.select({ slug: schema.pipelineSpecs.slug, activeVersionId: schema.pipelineSpecs.activeVersionId })
+		.from(schema.pipelineSpecs)
+		.where(eq(schema.pipelineSpecs.sourcePluginId, sourcePluginId))
+	const retired: string[] = []
+	for (const spec of owned) {
+		if (shipped.has(spec.slug) || spec.activeVersionId == null) continue
+		const changed = await db
+			.update(schema.pipelineSpecVersions)
+			.set({ status: "retired" })
+			.where(
+				and(
+					eq(schema.pipelineSpecVersions.id, spec.activeVersionId),
+					ne(schema.pipelineSpecVersions.status, "retired")
+				)
+			)
+			.returning({ id: schema.pipelineSpecVersions.id })
+		if (changed.length) retired.push(spec.slug)
+	}
+	if (retired.length) {
+		invalidateDeclaredEnvoys()
+		;(await import("$lib/server/pipelines/registrations/resolve")).invalidateRegistrations()
+	}
+	return retired
+}
+
+/**
  * The whole install's rule, run once: every active version's actions
  * together (U5c review, S2). What a batch publish owes after its last
  * pointer move — the per-publish check let each batch-mate through against
@@ -912,6 +955,10 @@ async function installedActions(
 			schema.pipelineSpecVersions,
 			eq(schema.pipelineSpecVersions.id, schema.pipelineSpecs.activeVersionId)
 		)
+		// A spec its package's current build does not ship is retired in place (its active
+		// version kept for what pins it, `retireUnshippedPluginSpecs`): it
+		// contributes nothing any more.
+		.where(ne(schema.pipelineSpecVersions.status, "retired"))
 	return await inRegisteringGenres(
 		db,
 		rows
@@ -1111,7 +1158,7 @@ export async function loadDocument(
 			...(b.repeatWhile ? { repeatWhile: b.repeatWhile } : {}),
 			...(b.onRef ? { on: b.onRef } : {}),
 			...(b.branches ? { branches: b.branches } : {}),
-			chains: chainsOf(nodeRows, clauseRows, b.clauseId),
+			chains: chainsOf(nodeRows, clauseRows, b.clauseId, b.branches),
 			...(b.parentClauseId ? { clauseId: b.parentClauseId } : {}),
 			...(b.parentClauseChain ? { clauseChain: b.parentClauseChain } : {}),
 			position: b.position
@@ -1133,11 +1180,20 @@ export async function loadDocument(
  * member is the `pick` junction — has no node of its own, and read off the
  * nodes alone it vanished on load, so the branch never ran. In declaration
  * (position) order, which is the order the builder listed them.
+ *
+ * The rule, one sentence: member-holding chains in position order, then
+ * member-less chains sorted by name (code-unit order). It is the SDK compile
+ * step's rule (`orderedChains` in the SDK's `document.ts`), so a loaded
+ * document hashes as it was saved. The member-less chains come from the
+ * stored `branches` (a junction's `{ chain: predicate }`; jsonb keeps no key
+ * order, hence the sort): an empty branch is a real branch — taking it runs
+ * nothing and keeps `otherwise` from firing — so it must not vanish on load.
  */
 function chainsOf(
 	nodeRows: any[],
 	clauseRows: any[],
-	clauseId: string
+	clauseId: string,
+	branches?: Record<string, unknown> | null
 ): string[] {
 	const members = [
 		...nodeRows
@@ -1149,6 +1205,9 @@ function chainsOf(
 	].sort((a, b) => a.position - b.position)
 	const seen: string[] = []
 	for (const m of members) if (!seen.includes(m.chain)) seen.push(m.chain)
-	return seen
+	const empty = Object.keys(branches ?? {})
+		.filter((c) => !seen.includes(c))
+		.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+	return [...seen, ...empty]
 }
 

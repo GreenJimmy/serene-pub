@@ -15,6 +15,8 @@
 	import LlamaCppForm from "$lib/client/connectionForms/LlamaCppForm.svelte"
 	import KoboldCppForm from "$lib/client/connectionForms/KoboldCppForm.svelte"
 	import KoboldCppManagedForm from "$lib/client/connectionForms/KoboldCppManagedForm.svelte"
+	import AudioCppManagedForm from "$lib/client/connectionForms/AudioCppManagedForm.svelte"
+	import AudioCppForm from "$lib/client/connectionForms/AudioCppForm.svelte"
 	import AnthropicForm from "$lib/client/connectionForms/AnthropicForm.svelte"
 	import ImageConnectionForm from "$lib/client/connectionForms/ImageConnectionForm.svelte"
 	import EmbeddingConnectionForm from "$lib/client/connectionForms/EmbeddingConnectionForm.svelte"
@@ -40,6 +42,10 @@
 	<KoboldCppManagedForm bind:connection />
 	<!-- The same process draws: its image settings and test box. -->
 	<ImageConnectionForm bind:connection embedded />
+{:else if connection.type === CONNECTION_TYPE.AUDIOCPP_MANAGED}
+	<AudioCppManagedForm bind:connection />
+{:else if connection.type === CONNECTION_TYPE.AUDIOCPP}
+	<AudioCppForm bind:connection />
 {:else if connection.type === CONNECTION_TYPE.ANTHROPIC}
 	<AnthropicForm bind:connection />
 {:else if CONNECTION_TYPE.isImage(connection.type)}

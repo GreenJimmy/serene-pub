@@ -17,6 +17,7 @@
 	 * through `WidgetHost`.
 	 */
 	import { v4 as uuid } from "uuid"
+	import { CONVERSATION_MOUNTS } from "$lib/client/sessionLayout/conversationMounts"
 	import { onMount } from "svelte"
 	import * as Icons from "@lucide/svelte"
 	import type { SessionV1, WidgetBaseSection, WidgetSectionScope } from "@serene-pub/sdk"
@@ -32,7 +33,9 @@
 	} from "$lib/client/components/frames/widgetWire.svelte"
 	import { frameInvokeVerdict } from "$lib/client/components/frames/frameActivation"
 	import { frameStateKey } from "$lib/client/components/frames/framePort"
-	import { createGuardedReceiver, interactionAfter, summarize } from "./receiverPolicy"
+	import { frameVersionOf } from "$lib/client/components/frames/frameOwner"
+	import { createGuardedReceiver, interactionAfter, shouldForward, summarize, TIMEUPDATE_MIN_MS } from "./receiverPolicy"
+	import { followFragmentLink } from "./fragmentLinks"
 	import {
 		acquireWorker,
 		currentEvent,
@@ -95,12 +98,6 @@
 		) => void
 		class?: string
 		/**
-		 * The message backing the host draws behind this widget (note 18;
-		 * `$lib/shared/widgets/messageBacking`), as `data-sp-backing` on the
-		 * box for widgets.css to paint. Absent: no attribute.
-		 */
-		backing?: "card" | "glass" | "none"
-		/**
 		 * The component failed or threw at runtime, as its worker reported it
 		 * (C6 P5): `failed` — it never mounted (its module did not load, or
 		 * its mount function threw) — or `error` — a handler threw after it
@@ -108,6 +105,11 @@
 		 * frames. The box handles both on its own either way; this only tells.
 		 */
 		onRuntimeError?: (e: ComponentRuntimeError) => void
+		/**
+		 * Asks the parent to mount this widget again. Shown as a button on the
+		 * stopped overlay; absent, no button.
+		 */
+		onReload?: () => void
 	}
 
 	let {
@@ -131,8 +133,8 @@
 		grants,
 		onAction,
 		class: klass = "",
-		backing,
-		onRuntimeError
+		onRuntimeError,
+		onReload
 	}: Props = $props()
 
 	/** Told, never trusted to return: a throwing listener is its own bug, not the box's. */
@@ -177,6 +179,14 @@
 	 * and radio names.
 	 */
 	const coreConversation = () => coreTrusted() && src === "/core-ui/messages"
+	/**
+	 * Any of the conversation family's modules (Messages, Composer, Turn
+	 * line) is exempt from paint containment: the Composer's palette, persona
+	 * menu and preview pop out of its box, and containment would clip them.
+	 */
+	const conversationMount = () =>
+		coreTrusted() &&
+		Object.values(CONVERSATION_MOUNTS).some((m) => m.src === src)
 	/** This mount keeps the page's ids: the conversation, named `pageIds`. */
 	const pageIdsHere = () => pageIds && coreConversation()
 
@@ -245,6 +255,9 @@
 			"invoke"
 		]
 		for (const type of boxEvents) box.addEventListener(type, stopAtBox)
+		const onClick = (e: MouseEvent) =>
+			void followFragmentLink(e, e.currentTarget as HTMLElement)
+		box.addEventListener("click", onClick)
 		const mountId = uuid()
 		// Named by its module, so a worker that has imported too many is
 		// recycled (`uiWorkers.ts`, C6 P5); released by the worker it took.
@@ -260,15 +273,39 @@
 			// receiver's, made here.
 			idPrefix: pageIdsHere() ? "" : `sp-r${++boxes}-${mountId.slice(0, 8)}-`,
 			warn: (message) => console.warn(`${label()}: ${message}`),
-			fnFor: (handle, event) => () => {
-				const e = currentEvent(event)
-				lastInteractionAt = interactionAfter(event, e, lastInteractionAt, Date.now())
-				postToWorker(worker, {
-					k: "fn",
-					mountId,
-					id: handle[FN],
-					detail: summarize(e, event, undefined)
-				})
+			fnFor: (handle, event) => {
+				const send = (seen?: Event) => {
+					const e = seen ?? currentEvent(event)
+					lastInteractionAt = interactionAfter(event, e, lastInteractionAt, Date.now())
+					postToWorker(worker, {
+						k: "fn",
+						mountId,
+						id: handle[FN],
+						detail: summarize(e, event, undefined)
+					})
+				}
+				if (event !== "timeupdate") return () => send()
+				// A media clock: at most ~4 a second, the newest one kept (trailing).
+				let lastAt: number | null = null
+				let timer: ReturnType<typeof setTimeout> | null = null
+				let latest: Event | undefined
+				return () => {
+					const now = Date.now()
+					// The event is only "current" while it is dispatched: keep it for a trailing send.
+					const seen = currentEvent(event)
+					if (shouldForward(event, lastAt, now)) {
+						lastAt = now
+						send(seen)
+						return
+					}
+					latest = seen
+					if (timer) return
+					timer = setTimeout(() => {
+						timer = null
+						lastAt = Date.now()
+						send(latest)
+					}, TIMEUPDATE_MIN_MS - (now - (lastAt ?? now)))
+				}
 			}
 		})
 		/**
@@ -330,6 +367,7 @@
 		return () => {
 			for (const type of boxEvents)
 				boxEl.removeEventListener(type, stopAtBox)
+			boxEl.removeEventListener("click", onClick)
 			tearDown()
 		}
 	})
@@ -349,20 +387,19 @@
 	     and core's alike. Core's own conversation is not held to that, as its
 	     native copy was not: paint containment also hides a scrolled-off row's
 	     backdrop from the page (axe cannot judge the contrast of those rows
-	     through it).
+	     through it), and the Composer's pop-outs would be clipped by it.
 	     `data-sp-card` is whether the host is drawing its card around this
 	     widget (ruled 2026-09-27; `sessionLayout/hostCard`) — the same fact as
 	     `layout.v1.chrome.card`, for a stylesheet to key off.
-	     `data-sp-backing` is the message backing the host draws behind core's
-	     conversation (card | glass | none; note 18) — widgets.css paints it. -->
+	     The backing is the PANEL's (`--sp-widget-*`, ./PanelTabs), not this box's. -->
 	<div
 		bind:this={box}
 		class="sp-remote-box h-full w-full overflow-auto {klass}"
 		data-sp-owner={owner}
+		data-sp-version={frameVersionOf(src)}
 		data-sp-widget-box=""
 		data-sp-card={placement?.chrome?.card ? "on" : "off"}
-		data-sp-backing={backing}
-		style:contain={coreConversation() ? undefined : "paint"}
+		style:contain={conversationMount() ? undefined : "paint"}
 		aria-label={title}
 		role="region"
 	></div>
@@ -373,10 +410,24 @@
 		>
 			<Icons.TriangleAlert size={20} class="text-error-600-400" />
 			<p class="text-surface-600-400 max-w-xs text-xs">
-				This widget stopped and can't show anything. Reload the page to
-				try it again — the extension's own message is in the browser
-				console.
+				{#if onReload}
+					This widget stopped and can't show anything. Reload it to try
+					again — the extension's own message is in the browser console.
+				{:else}
+					This widget stopped and can't show anything. Reload the page
+					to try it again — the extension's own message is in the
+					browser console.
+				{/if}
 			</p>
+			{#if onReload}
+				<button
+					type="button"
+					class="btn btn-sm preset-tonal"
+					onclick={() => onReload()}
+				>
+					Reload widget
+				</button>
+			{/if}
 		</div>
 	{/if}
 </div>

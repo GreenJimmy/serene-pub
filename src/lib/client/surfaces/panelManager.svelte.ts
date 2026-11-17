@@ -26,6 +26,7 @@ import {
 	layoutWidgetIds,
 	panelsOf,
 	type PanelLayoutV1,
+	type PanelLayoutV2,
 	widgetOfInstance,
 	type SessionLayoutV1
 } from "@serene-pub/sdk"
@@ -35,10 +36,7 @@ import type {
 	WidgetEventSource
 } from "$lib/shared/widgets/context"
 import { pack } from "./pack"
-import {
-	withPanelOpen,
-	withPanelPinned
-} from "$lib/client/sessionLayout/livePanels"
+import { withPanelOpen } from "$lib/client/sessionLayout/livePanels"
 import {
 	instanceTitle,
 	normalizeLayout,
@@ -252,6 +250,18 @@ export class SurfaceManager implements WidgetEventSource {
 	 * (Start from, Reset, Start from scratch) — and re-read it.
 	 */
 	seedCount = $state(0)
+
+	/**
+	 * How many copies have landed into this manager (`noteCopyLanded`), the
+	 * key the conversation remounts on: a `sessions:view` reply re-seeds too
+	 * (`seedCount`), and that must not remount a widget being read.
+	 */
+	copiesLanded = $state(0)
+
+	/** A copy landed from the server and the manager was re-seeded from it. */
+	noteCopyLanded(): void {
+		this.copiesLanded++
+	}
 
 	/**
 	 * (Re)seed from the mode's declared panels + this user's session layout —
@@ -606,6 +616,25 @@ export class SurfaceManager implements WidgetEventSource {
 		this.#emit({ kind: "story:moved" })
 	}
 
+	/**
+	 * 🚧 M2a a6: a press's run ended — the server's `sessions:runEnded` push
+	 * for this session (`runEnded.ts`), whoever pressed. Every subscriber hears
+	 * `run:ended` with the run's id and outcome, and its sentence on a halt or
+	 * an error, so a board redraws when anybody's move lands or is refused.
+	 */
+	announceRunEnded(run: { runId: string; outcome: "ok" | "halt" | "err" | "cancelled"; reason?: string }) {
+		this.#emit({ kind: "run:ended", runId: run.runId, outcome: run.outcome, ...(run.reason ? { reason: run.reason } : {}) })
+	}
+
+	/**
+	 * 🚧 The viewer's full screen changed (SHAPES L1): the corner control, a
+	 * key, or a `session-fullscreen` request. Every subscriber hears
+	 * `fullscreen`; on change only, never at mount.
+	 */
+	announceFullscreen(on: boolean) {
+		this.#emit({ kind: "fullscreen", on })
+	}
+
 	/* ── the session-level widget event source (PLAN 25) ──────────────────
 	 * Every widget's wire (`ComponentMount`), and a session-view frame's
 	 * (`PluginFrame`), fans out from here and filters to its declared channels. The
@@ -762,7 +791,7 @@ export class SurfaceManager implements WidgetEventSource {
 	}
 
 	/** Replace the arrangement; it persists (debounced) like every edit. */
-	setPanels(panels: PanelLayoutV1) {
+	setPanels(panels: PanelLayoutV1 | PanelLayoutV2) {
 		this.panels = panels
 		this.#syncCopies()
 		this.#schedulePersist()
@@ -774,8 +803,8 @@ export class SurfaceManager implements WidgetEventSource {
 	 * `panels` writes the converted arrangement, and from then on the row
 	 * has them.
 	 */
-	#currentPanels(): PanelLayoutV1 {
-		return $state.snapshot(panelsOf(this.arrangement)) as PanelLayoutV1
+	#currentPanels(): PanelLayoutV2 {
+		return $state.snapshot(panelsOf(this.arrangement)) as PanelLayoutV2
 	}
 
 	/**
@@ -785,12 +814,6 @@ export class SurfaceManager implements WidgetEventSource {
 	 */
 	setPanelOpen(key: string, tab: string) {
 		const next = withPanelOpen(this.#currentPanels(), key, tab)
-		if (next) this.setPanels(next)
-	}
-
-	/** A side panel docked (`true`) or moved to the rail (`false`). */
-	setPanelPinned(key: string, pinned: boolean) {
-		const next = withPanelPinned(this.#currentPanels(), key, pinned)
 		if (next) this.setPanels(next)
 	}
 

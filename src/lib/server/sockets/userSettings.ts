@@ -1,3 +1,4 @@
+import { isSpokenPlayback } from "$lib/shared/speech/spokenPlayback"
 import { db } from "$lib/server/db"
 import { getMediaByUuid, mediaIdUrl, mediaUrl } from "$lib/server/media"
 import * as schema from "$lib/server/db/schema"
@@ -17,6 +18,7 @@ import { assertSupportedLanguage } from "./language"
 import { refusable } from "./refusable"
 import { isLoreWriteMode } from "$lib/shared/lorebooks/loreWriteMode"
 import { loreWriteModeFor } from "$lib/server/state/loreWriteMode"
+import { isLibraryWriteMode } from "$lib/shared/library/libraryWriteMode"
 
 const DEFAULT_BACKGROUNDS_MANIFEST = "/backgrounds/defaults/manifest.json"
 
@@ -167,7 +169,8 @@ export async function buildUserSettingsGet(
 				darkMode: true,
 				showHomePageBanner: true,
 				enableEasyCharacterCreation: true,
-				showAllCharacterFields: false
+				showAllCharacterFields: false,
+				showAdvancedControls: false
 			})
 			.onConflictDoNothing()
 
@@ -195,6 +198,7 @@ export async function buildUserSettingsGet(
 			enableEasyCharacterCreation:
 				settings.enableEasyCharacterCreation,
 			showAllCharacterFields: settings.showAllCharacterFields,
+			showAdvancedControls: settings.showAdvancedControls,
 			// One field on the wire, two columns behind it (28): an
 			// uploaded background is a `/media/{id}` proxy, a shipped
 			// default is its static path. The client only ever
@@ -208,6 +212,7 @@ export async function buildUserSettingsGet(
 			backgroundOpacity: settings.backgroundOpacity ?? 75,
 			charaVaultIncludeNsfw:
 				settings.charaVaultIncludeNsfw ?? false,
+			spokenPlayback: isSpokenPlayback(settings.spokenPlayback) ? settings.spokenPlayback : "auto",
 			// Two fields, not one (R5). `language` is what this user
 			// *chose* — null meaning "follow the instance default" — and
 			// the picker needs that distinction to show "Server default"
@@ -220,6 +225,8 @@ export async function buildUserSettingsGet(
 			// its own option. `effectiveLoreWriteMode` is the answer.
 			loreWriteMode: isLoreWriteMode(settings.loreWriteMode) ? settings.loreWriteMode : null,
 			effectiveLoreWriteMode: await loreWriteModeFor(db, userId),
+			// 🚧 As stored; null reads Full (M2c).
+			libraryWriteMode: isLibraryWriteMode(settings.libraryWriteMode) ? settings.libraryWriteMode : null,
 			routineCaps: await routineCapsView(settings)
 		}
 	}
@@ -441,6 +448,27 @@ export const userSettingsUpdateEasyCharacterCreation: Handler<
 	}
 }
 
+/** 🚧 How spoken lines play for this person; playback only, never synthesis. */
+export const userSettingsUpdateSpokenPlayback: Handler<
+	Sockets.UserSettings.UpdateSpokenPlayback.Params,
+	Sockets.UserSettings.UpdateSpokenPlayback.Response
+> = {
+	event: "userSettings:updateSpokenPlayback",
+	handler: async (socket: AuthenticatedSocket, params, emitToUser) => {
+		const userId = socket.user!.id
+		if (!userId) throw new Error("User not authenticated")
+		if (!isSpokenPlayback(params?.mode)) throw new Error("Unknown spoken playback mode")
+		await db
+			.update(schema.userSettings)
+			.set({ spokenPlayback: params.mode })
+			.where(eq(schema.userSettings.userId, userId))
+		const res: Sockets.UserSettings.UpdateSpokenPlayback.Response = { success: true, mode: params.mode }
+		emitToUser("userSettings:updateSpokenPlayback", res)
+		await emitToUser("userSettings:get", () => buildUserSettingsGet(userId))
+		return res
+	}
+}
+
 export const userSettingsUpdateShowAllCharacterFields: Handler<
 	Sockets.UserSettings.UpdateShowAllCharacterFields.Params,
 	Sockets.UserSettings.UpdateShowAllCharacterFields.Response
@@ -475,6 +503,46 @@ export const userSettingsUpdateShowAllCharacterFields: Handler<
 			console.error("Update show all character fields error:", error)
 			emitToUser("userSettings:updateShowAllCharacterFields:error", {
 				error: "Failed to update show all character fields setting"
+			})
+			throw error
+		}
+	}
+}
+
+export const userSettingsUpdateShowAdvancedControls: Handler<
+	Sockets.UserSettings.UpdateShowAdvancedControls.Params,
+	Sockets.UserSettings.UpdateShowAdvancedControls.Response
+> = {
+	event: "userSettings:updateShowAdvancedControls",
+	handler: async (socket: AuthenticatedSocket, params, emitToUser) => {
+		try {
+			const userId = socket.user!.id
+			if (!userId) {
+				throw new Error("User not authenticated")
+			}
+
+			await db
+				.update(schema.userSettings)
+				.set({
+					showAdvancedControls: params.enabled
+				})
+				.where(eq(schema.userSettings.userId, userId))
+
+			const res: Sockets.UserSettings.UpdateShowAdvancedControls.Response =
+				{
+					success: true,
+					enabled: params.enabled
+				}
+			emitToUser("userSettings:updateShowAdvancedControls", res)
+			// Lazy — see `buildUserSettingsGet`.
+			await emitToUser("userSettings:get", () =>
+				buildUserSettingsGet(userId)
+			)
+			return res
+		} catch (error: any) {
+			console.error("Update show advanced controls error:", error)
+			emitToUser("userSettings:updateShowAdvancedControls:error", {
+				error: "Failed to update show advanced controls setting"
 			})
 			throw error
 		}
@@ -767,25 +835,40 @@ export const userSettingsUpdateLoreWriteMode: Handler<
 	"userSettings:updateLoreWriteMode",
 	async (socket: AuthenticatedSocket, params, emitToUser) => {
 		const userId = socket.user!.id
+		const hasLore = params != null && "mode" in params
+		const hasLibrary = params != null && "libraryWriteMode" in params
 		const mode = params?.mode ?? null
-		if (mode !== null && !isLoreWriteMode(mode))
+		const libraryWriteMode = params?.libraryWriteMode ?? null
+		if (hasLore && mode !== null && !isLoreWriteMode(mode))
 			throw new Error("Lorebook writes from sessions are Full, Review changes or Off.")
+		if (hasLibrary && libraryWriteMode !== null && !isLibraryWriteMode(libraryWriteMode))
+			throw new Error("Library writes are Full, Review or Off.")
 		// Written whether or not the row exists yet: the choice is the point.
+		// Only the field(s) named change; the other keeps its value.
+		const set: { loreWriteMode?: typeof mode; libraryWriteMode?: typeof libraryWriteMode } = {}
+		if (hasLore || !hasLibrary) set.loreWriteMode = mode
+		if (hasLibrary) set.libraryWriteMode = libraryWriteMode
 		await db
 			.insert(schema.userSettings)
-			.values({ userId, loreWriteMode: mode })
-			.onConflictDoUpdate({ target: schema.userSettings.userId, set: { loreWriteMode: mode } })
+			.values({ userId, ...set })
+			.onConflictDoUpdate({ target: schema.userSettings.userId, set })
+		const [after] = await db
+			.select()
+			.from(schema.userSettings)
+			.where(eq(schema.userSettings.userId, userId))
+			.limit(1)
 		const res: Sockets.UserSettings.UpdateLoreWriteMode.Response = {
 			success: true,
-			mode,
-			effectiveMode: await loreWriteModeFor(db, userId)
+			mode: isLoreWriteMode(after?.loreWriteMode) ? after.loreWriteMode : null,
+			effectiveMode: await loreWriteModeFor(db, userId),
+			libraryWriteMode: isLibraryWriteMode(after?.libraryWriteMode) ? after.libraryWriteMode : null
 		}
 		emitToUser("userSettings:updateLoreWriteMode", res)
 		// Lazy — see `buildUserSettingsGet`.
 		await emitToUser("userSettings:get", () => buildUserSettingsGet(userId))
 		return res
 	},
-	"Your lorebook writes from sessions could not be changed."
+	"Your write settings could not be changed."
 )
 
 // Registration function for all user settings handlers
@@ -805,6 +888,8 @@ export function registerUserSettingsHandlers(
 	register(socket, userSettingsUpdateRoutineCaps, emitToUser)
 	register(socket, userSettingsUpdateEasyCharacterCreation, emitToUser)
 	register(socket, userSettingsUpdateShowAllCharacterFields, emitToUser)
+	register(socket, userSettingsUpdateShowAdvancedControls, emitToUser)
+	register(socket, userSettingsUpdateSpokenPlayback, emitToUser)
 	register(socket, userSettingsUpdateTheme, emitToUser)
 	register(socket, userSettingsUpdateDarkMode, emitToUser)
 	register(socket, userSettingsUpdateLanguage, emitToUser)

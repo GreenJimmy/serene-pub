@@ -8,7 +8,7 @@
 		useInterest
 	} from "$lib/client/sockets/interest.svelte"
 	import { Dialog, Portal } from "@skeletonlabs/skeleton-svelte"
-	import { toaster } from "$lib/client/utils/toaster"
+	import { notify } from "$lib/client/utils/notify"
 
 	interface Props {
 		isManaged?: boolean
@@ -46,6 +46,12 @@
 	 */
 	let loadedText = $derived(loadedConfig?.resident?.text ?? null)
 	let loadedImage = $derived(loadedConfig?.resident?.image ?? null)
+	/**
+	 * 🚧 S10 (speech build): the co-resident speech model (`--ttsmodel`, plus
+	 * `--ttswavtokenizer` for Qwen3 TTS), as the wire's `ResidentAudio`.
+	 */
+	let loadedAudio = $derived(loadedConfig?.resident.audio ?? null)
+	const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p
 
 	const statusColors: Record<string, string> = {
 		running: "bg-success-500",
@@ -128,7 +134,8 @@
 
 	function handlePerfError(message: Sockets.ErrorResponse) {
 		isLoadingPerf = false
-		toaster.error({
+		notify.error({
+			source: "socket:koboldcpp:perf:error",
 			title: "Failed to fetch performance stats",
 			description: message.error
 		})
@@ -158,12 +165,16 @@
 
 	function handleStartSubprocess() {
 		starting = false
-		toaster.success({ title: "KoboldCPP starting…" })
+		notify.success({
+			source: "socket:koboldcpp:startSubprocess",
+			title: "KoboldCPP starting…"
+		})
 	}
 
 	function handleStartSubprocessError(msg: Sockets.ErrorResponse) {
 		starting = false
-		toaster.error({
+		notify.error({
+			source: "socket:koboldcpp:startSubprocess:error",
 			title: "Failed to start",
 			description: msg?.error
 		})
@@ -174,9 +185,13 @@
 	) {
 		stopping = false
 		if (msg.success) {
-			toaster.success({ title: "KoboldCPP stopped" })
+			notify.success({
+				source: "socket:koboldcpp:stopSubprocess",
+				title: "KoboldCPP stopped"
+			})
 		} else {
-			toaster.error({
+			notify.error({
+				source: "socket:koboldcpp:stopSubprocess",
 				title: "Couldn't stop KoboldCPP",
 				description: msg.error
 			})
@@ -189,9 +204,13 @@
 			currentModel = null
 			currentContext = null
 			loadedConfig = null
-			toaster.success({ title: "Model unloaded" })
+			notify.success({
+				source: "socket:koboldcpp:unloadModel",
+				title: "Model unloaded"
+			})
 		} else {
-			toaster.error({
+			notify.error({
+				source: "socket:koboldcpp:unloadModel",
 				title: "Unload not supported by this build"
 			})
 		}
@@ -279,12 +298,7 @@
 						<button
 							class="btn btn-sm preset-tonal-error"
 							onclick={stopSubprocess}
-							disabled={stopping ||
-								subStatus?.status === "stopping" ||
-								subStatus?.isExternal}
-							title={subStatus?.isExternal
-								? "This instance wasn't started by Serene Pub, so it can't be stopped from here"
-								: undefined}
+							disabled={stopping || subStatus?.status === "stopping"}
 						>
 							{#if stopping}<Icons.Loader2
 									size={13}
@@ -307,23 +321,6 @@
 					{/if}
 				</div>
 			</div>
-			{#if subStatus?.isExternal}
-				<div
-					class="border-warning-500 bg-warning-500/10 flex items-start gap-2 rounded-lg border p-2"
-				>
-					<Icons.AlertTriangle
-						size={14}
-						class="text-warning-700-300 mt-0.5 shrink-0"
-					/>
-					<p class="text-warning-700-300 text-xs">
-						This is an external KoboldCPP instance Serene Pub found
-						already running on the configured port, not one it
-						started itself — Stop and Unload aren't available for
-						it, and its admin password may not match, which can make
-						model loading fail.
-					</p>
-				</div>
-			{/if}
 			{#if subStatus?.lastError}
 				<p class="text-error-600-400 text-xs">{subStatus.lastError}</p>
 			{/if}
@@ -335,13 +332,12 @@
 
 			<!-- Loaded model -->
 			<div>
-				<p
-					class="text-surface-600-400 mb-1 text-xs"
-				>
-					Loaded model
-				</p>
+				<p class="text-surface-600-400 mb-1 text-xs">Loaded model</p>
 				<div class="flex items-center gap-2">
-					<Icons.Brain size={14} class="text-surface-600-400 shrink-0" />
+					<Icons.Brain
+						size={14}
+						class="text-surface-600-400 shrink-0"
+					/>
 					<span class="min-w-0 flex-1 truncate text-xs">
 						{currentModel ?? "No model loaded"}
 						{#if currentModel && currentContext}
@@ -355,9 +351,7 @@
 							class="btn btn-sm preset-tonal-warning shrink-0 text-xs"
 							onclick={unloadModel}
 							disabled={unloading}
-							title={subStatus?.isExternal
-								? "This instance's admin password may not match Serene Pub's — unload may fail"
-								: "Unload model from memory"}
+							title="Unload model from memory"
 						>
 							{#if unloading}<Icons.Loader2
 									size={12}
@@ -380,9 +374,7 @@
 			<!-- Loaded config -->
 			{#if currentModel}
 				<div>
-					<p
-						class="text-surface-600-400 mb-1 text-xs"
-					>
+					<p class="text-surface-600-400 mb-1 text-xs">
 						Loaded config
 					</p>
 					<!-- Read through the residency map, and gate on the TEXT entry
@@ -460,6 +452,33 @@
 							{/if}
 						</div>
 					{/if}
+					{#if loadedAudio}
+						<div
+							class="mt-1 grid grid-cols-1 gap-x-3 gap-y-1 text-xs @lg/view:grid-cols-2"
+						>
+							<div class="flex justify-between gap-2">
+								<span class="text-surface-700-300">
+									Speech model
+								</span>
+								<span class="truncate font-mono">
+									{loadedAudio.ttsFile ??
+										baseName(loadedAudio.ttsModelPath)}
+								</span>
+							</div>
+							{#if loadedAudio.ttsWavTokenizerPath}
+								<div class="flex justify-between gap-2">
+									<span class="text-surface-700-300">
+										Speech tokenizer
+									</span>
+									<span class="truncate font-mono">
+										{baseName(
+											loadedAudio.ttsWavTokenizerPath
+										)}
+									</span>
+								</div>
+							{/if}
+						</div>
+					{/if}
 					{#if loadedConfig}
 						<button
 							class="btn btn-sm preset-tonal-primary mt-2 text-xs"
@@ -480,11 +499,7 @@
 			<!-- Binary info -->
 			{#if koboldCppSettingsCtx.settings?.koboldCppManagedBinaryVariant}
 				<div>
-					<p
-						class="text-surface-600-400 mb-1 text-xs"
-					>
-						Binary
-					</p>
+					<p class="text-surface-600-400 mb-1 text-xs">Binary</p>
 					<p class="text-xs">
 						{koboldCppSettingsCtx.settings
 							.koboldCppManagedBinaryVariant}
@@ -546,11 +561,7 @@
 
 		<!-- Speed stats -->
 		<div class="card bg-surface-100-900 p-4">
-			<h4
-				class="text-surface-600-400 mb-3 text-xs"
-			>
-				Generation speed
-			</h4>
+			<h4 class="text-surface-600-400 mb-3 text-xs">Generation speed</h4>
 			<div class="grid grid-cols-1 gap-3 @lg/view:grid-cols-2">
 				<div class="text-center">
 					<div class="text-2xl font-bold tabular-nums">
@@ -574,11 +585,7 @@
 		<!-- Last request -->
 		{#if perf.lastTokenCount > 0}
 			<div class="card bg-surface-100-900 p-4">
-				<h4
-					class="text-surface-600-400 mb-3 text-xs"
-				>
-					Last request
-				</h4>
+				<h4 class="text-surface-600-400 mb-3 text-xs">Last request</h4>
 				<div class="space-y-2 text-sm">
 					<div class="flex justify-between">
 						<span class="text-surface-600-400">
@@ -606,11 +613,7 @@
 
 		<!-- System stats -->
 		<div class="card bg-surface-100-900 p-4">
-			<h4
-				class="text-surface-600-400 mb-3 text-xs"
-			>
-				System
-			</h4>
+			<h4 class="text-surface-600-400 mb-3 text-xs">System</h4>
 			<div class="space-y-2 text-sm">
 				<div class="flex justify-between">
 					<span class="text-surface-600-400">Uptime</span>

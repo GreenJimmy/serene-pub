@@ -240,12 +240,13 @@ export const GUIDE_ORDER = [
 			"scripts",
 			"system-settings",
 			"component-authoring",
+			"plugins",
 			"data-model-notes"
 		]
 	},
 	{
 		group: "Reference and help",
-		pages: ["environment-variables", "troubleshooting", "release-notes/0.6.0-pr-6", "release-notes/0.6.0-pr-3", "release-notes/0.6.0-pr-1"]
+		pages: ["environment-variables", "troubleshooting", "code-signing-policy", "release-notes/0.6.0-pr-7", "release-notes/0.6.0-pr-6", "release-notes/0.6.0-pr-3", "release-notes/0.6.0-pr-1"]
 	}
 ]
 
@@ -257,7 +258,7 @@ export const GUIDE_ORDER = [
  * A guide missing from this list is appended alphabetically and reported as a
  * warning — the compiler's rule, not a special case for this source.
  */
-const SDK_GUIDE_ORDER = ["extending", "vocabulary", "your-first-plugin", "widgets", "widget-examples", "frames", "channels", "events", "genres-presets-and-routines", "rulesets", "storage", "writing-lore-from-a-pipeline", "forms-and-effects", "plugin-permissions", "where-values-come-from"]
+const SDK_GUIDE_ORDER = ["extending", "vocabulary", "stability", "your-first-plugin", "coming-from-sillytavern-extensions", "widgets", "widget-examples", "frames", "channels", "events", "genres-presets-and-routines", "rulesets", "time", "storage", "writing-lore-from-a-pipeline", "forms-and-effects", "plugin-permissions", "where-values-come-from"]
 
 /**
  * Reading order for the catalog-and-laws source, derived from its own pages.
@@ -315,7 +316,7 @@ function apiReadingOrder(pages) {
  */
 const SDK_BANNER =
 	"Plugins are a preview in Serene Pub 0.6: releases ship with them " +
-	"switched off (an administrator turns them on with SP_PLUGINS_ENABLED), " +
+	"on (an administrator can turn them off with SP_PLUGINS_ENABLED), " +
 	"and the SDK may still change before its first stable release in 0.7. " +
 	"This reference describes the SDK the app runs."
 
@@ -325,7 +326,7 @@ const SDK_BANNER =
  */
 const SDK_GUIDES_BANNER =
 	"Plugins are a preview in Serene Pub 0.6: releases ship with them " +
-	"switched off (an administrator turns them on with SP_PLUGINS_ENABLED), " +
+	"on (an administrator can turn them off with SP_PLUGINS_ENABLED), " +
 	"and the SDK may still change before its first stable release in 0.7. " +
 	"Everything on this page builds and runs today."
 
@@ -514,13 +515,29 @@ export async function buildDocs({ watch = false, profile = "app" } = {}) {
 	// Only the site profile reads it at all, so only the site profile has
 	// anything to say about it missing: warning the app build about a directory
 	// it would ignore if it existed is noise on every dev-server start.
+	// Regenerated first, so the pages are the checkout's current declarations and
+	// not whatever the last `sdk:build` left; a failure is a warning and the
+	// build goes on with what is there.
+	if (target.api && fs.existsSync(path.join(SDK_REPO_DIR, "package.json"))) {
+		// `npm` is `npm.cmd` on Windows, which only a shell resolves.
+		const gen = child_process.spawnSync("npm", ["run", "docs:api"], {
+			cwd: SDK_REPO_DIR,
+			stdio: "inherit",
+			shell: process.platform === "win32"
+		})
+		if (gen.status !== 0)
+			console.warn(
+				`[docs] \`npm run docs:api\` in ${SDK_REPO_DIR} did not finish ` +
+					`(${gen.error ? gen.error.message : `exit ${gen.status}`}); using the API reference already there, if any.`
+			)
+	}
 	const apiPages =
 		target.api && fs.existsSync(SDK_API_DIR)
 			? await loadMarkdownDir(SDK_API_DIR)
 			: null
 	if (target.api && !apiPages) {
 		console.warn(
-			`[docs] no API reference at ${SDK_API_DIR} — run \`npm run sdk:build\` ` +
+			`[docs] no API reference at ${SDK_API_DIR} — run \`npm run docs:api\` in the SDK checkout ` +
 				`to generate it; compiling without the SDK API source.`
 		)
 	}

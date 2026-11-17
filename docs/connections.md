@@ -31,16 +31,28 @@ Open **Models** from the rail. It is the pub's inventory: every model it can use
 
 ### Models, top to bottom
 
-- **The toolbar.** **Get a model** opens the [model finder](#the-model-finder) as a dialog. **Filter** matches a model's name, its identifier, its connection's name and its service. The button beside it, **Model scope**, narrows the list to one kind of model: **All**, **Chat**, **Images**, **Embeddings** or **Entities**, each with how many models it keeps; the narrowing in force shows as a chip, and its **×** clears it. **⋯** holds **Add a model by name** (for a connection whose service doesn't publish a list of models).
-- **The models list**: every model of every connection, described [below](#the-models-list).
-- **The background remover**, the one local model no connection owns (see [The background remover](#the-background-remover)), with **Delete from disk** once it is downloaded.
+- **The toolbar.** **Get a model** opens the [model finder](#get-a-model) beside the list. **Filter** matches a model's name, its identifier, its connection's name and its service. The button beside it, **Model scope**, opens a short list with two parts. The first narrows the list to one kind of model: **All**, **Chat**, **Images**, **Embeddings**, **Entities**, **In a loadout** (models a loadout is set to run on) or **On disk** (a model of an _On this machine_ connection that it still lists, or, for a local ONNX model, once it is downloaded), each with how many models it keeps; the narrowing in force shows as a chip, and its **×** clears it. The second, under a line and headed **Group by**, changes how the list is arranged and keeps nothing out (see [below](#the-models-list)). While anything is downloading, a **↓ n** button with the count joins the toolbar's buttons; it opens the [Downloads list](#downloads), as the tray's **View** does. **⋯** holds **Add a model by name** (for a connection whose service doesn't publish a list of models). It opens beside the list, like Get a model, and **Back** returns to the list.
+- **The models list**: every model of every connection, in groups, described [below](#the-models-list).
+- **The background remover**, the one local model no connection owns (see [The background remover](#the-background-remover)), with **Delete from disk** once it is downloaded. It is a row inside the list's groups (see [below](#the-models-list)); with no groups to show it stands on its own under its own _Background remover_ heading.
 - **Downloads**, at the foot while anything is downloading: a count, an overall bar, and **View**, which opens the [Downloads list](#downloads) above the tray.
 
 With nothing connected yet, the list says _No models yet._ Under it, _Or add a connection to a service or a server you run._ ends in **Add a connection**, which opens the [Connections view](#the-connections-view).
 
 ### The models list
 
-One row per model, from every connection at once, sorted by name. The models you can pick come first; models that are switched off or no longer listed are at the end. Each row shows the model's name and a line of facts about it, its connection as a small chip (hover it for the service as well), and a gold mark for each default loadout it is in. A local ONNX model that isn't downloaded yet says its size instead.
+One row per model, from every connection at once, in groups. The **Group by** choice in the **Model scope** list picks the groups, and it is remembered in this browser. Choosing one closes the list; it is an arrangement, not a narrowing, so it shows no chip.
+
+- **Where it lives** (the default): **On this machine**, then **Services**, the two groups of the Connections view. The background remover is the last row of _On this machine_.
+- **What it can do**: one heading for each of **Chat**, **Images**, **Embeddings**, **Entities**, **Speech** and **Transcription**, in that order, then a heading for any other kind a model can do (only for a model that can do none of those six), then **Cut-outs**, which holds the background remover. A model that can do several of the six is listed under each.
+- **Connection**: one heading per connection, named by it. The connections _On this machine_ come first, in the Connections view's order, then the services, then **Built in**, which holds the background remover.
+
+In every grouping the last heading is **Can't be used right now**: models that are switched off, no longer listed, or able to do nothing a default loadout runs. A row there says why on its facts line, _Switched off_ or _No default loadout can run this model_; a model no longer listed keeps its _No longer listed_ badge. Inside a heading, models are sorted by name, and a heading with nothing to show is not drawn.
+
+On the _On this machine_ side, the headings (_On this machine_ itself, and each local connection's heading under **Connection**) show at the right the total size of the models whose size is known, such as _23.4 GB_; no total is shown when no size is known. An Ollama row ends its facts line with _lives in Ollama_.
+
+A service with more than 12 models starts **folded** every time you open the view, so one big service doesn't bury the rest. Only its models that a loadout uses stay in sight, and a line after its rows says what is hidden, with **Show**: under **Where it lives**, the connection's name and _312 models · 1 in a loadout_; under **Connection**, the same line under that connection's heading; under **What it can do** and **Can't be used right now**, _+ 300 on OpenRouter_ in each heading where rows are hidden. The _· 1 in a loadout_ part appears once the loadouts have loaded. **Show** opens that service under every grouping until you leave the view, and typing in the filter box shows everything.
+
+Each row shows the model's name and a line of facts about it, its connection as a small chip (hover it for the service as well), and a gold mark for each default loadout it is in. A local ONNX model that isn't downloaded yet says its size instead. Inside a group, the background remover's row (administrators only) is the last row, under the group's own heading.
 
 **Use in…** opens a small menu of the loadouts that can run this model, the default first (such as _Reply_, then _Extraction_, _Tool calling_), each saying what it runs on now or _Unfilled — falls back to Reply_. Picking one puts this model in that loadout; picking the default is the same as **Use** anywhere else. **Use in…** is offered only where it can work right now: not on a model that is switched off, no longer listed, or a local file still to download.
 
@@ -51,31 +63,68 @@ Tap a row and the model's own settings open beside the list, the same page a con
 The Loadouts status strip's **Set up chat** (offered only while nothing can chat), the first-run card's **KoboldCPP, run by Serene Pub** door in Connections, and the wizard's door of the same name all open **Set up chat**: a dialog over the Models view with three steps.
 
 1. **Runtime.** Serene Pub adds a KoboldCPP connection and shows the build picker. Pick the build for your hardware; it downloads and starts by itself. If you already run KoboldCPP yourself, **Point Serene Pub at it instead** closes the dialog and opens the connection in the Connections view, where **I'll manage it myself** is offered.
-2. **Model.** The [model finder](#the-model-finder), already set to chat and to that KoboldCPP. Get one model.
-3. **Done.** The first model to arrive fills the Reply loadout, but only if it was empty, so a pub that already replies is never switched to another model. The step says so, such as _Gemma 3 is now in the Reply loadout._ **Start a session** closes the dialog and opens Sessions; **Open KoboldCPP** closes it and opens the connection in the Connections view.
+2. **Model.** The [model finder](#get-a-model), already set to chat and to that KoboldCPP. Get one model.
+3. **Done.** When a download finishes and the Reply loadout is empty, Serene Pub puts that model in it, whether or not the dialog is still open; a pub that already replies is never switched to another model. The step names it, such as _Gemma 3 is now in the Reply loadout._ If Reply is still empty (the model was already on disk, or you run KoboldCPP yourself), the step says so and points at **Use in Reply** on a model in KoboldCPP's view. **Start a session** closes the dialog and opens Sessions; **Open KoboldCPP** closes it and opens the connection in the Connections view.
 
 The step is worked out from what is actually there each time. Close the dialog with a download running, open it again later, and you land on the step you are really at.
 
 ### Filling a default loadout
 
-A default loadout is filled in its [editor](#the-loadout-editor), in the Loadouts view. These open that editor: **Open in Loadouts** on a row of **Admin › Models › Loadouts**, a loadout listed under **Used by** in the Sampling view, and **Fill the Reply loadout** on the line above a session's composer. Every other way to choose a model for a kind of work fills its default loadout: **Use in…** in the [models list](#the-models-list), **Use** or **Use in Reply** on a connection's Models tab, **Use in…** on a model's own page, **Use in Reply** in KoboldCPP's or Ollama's own view, **Use in Embeddings** or **Use in Entities** on a local ONNX model, and Set up chat's first model. Switching the embedding or entity model can mean redoing stored work, so it asks first (see [Local ONNX models](#local-onnx-models)).
+A default loadout is filled in its [editor](#the-loadout-editor), in the Loadouts view. These open that editor: **Open in Loadouts** on a row of **Admin › Models › Loadouts**, a loadout listed under **Used by** in the Sampling view, and **Fill the Reply loadout** on the line above a session's composer. Every other way to choose a model for a kind of work fills its default loadout: **Use in…** in the [models list](#the-models-list), **Use** or **Use in Reply** on a connection's Models tab, **Use in…** on a model's own page, **Use in Reply** in KoboldCPP's or Ollama's own view, **Use in Embeddings** or **Use in Entities** on a local ONNX model, and a KoboldCPP model you download landing while Reply is empty (see [Set up chat](#set-up-chat)). Switching the embedding or entity model can mean redoing stored work, so it asks first (see [Local ONNX models](#local-onnx-models)).
 
-### The model finder
+### Get a model
 
-The finder searches the recommended model lists and Hugging Face from one box. In the Models view, **Get a model** opens it as the **Get a model** dialog, and a loadout editor's **Get a model…** opens it already set to that kind of model. It is also a managed or local ONNX connection's **Get** tab in the Connections view, and Set up chat's Model step. Getting a model doesn't close it: the downloads tray shows the progress. It has four rows:
+**Get a model** is the one place models are searched for and downloaded: Serene Pub's recommended lists and Hugging Face, from one box, into any program Serene Pub can download into. Only administrators see it. Every door opens the same finder, already set for where you came from:
 
-1. **Search.** Typing narrows the recommended models at once and, after a pause, searches Hugging Face for GGUF files. For a local ONNX connection there is no search; **Add from Hugging Face by id** takes a model's id instead.
-2. **For**: **Chat**, **Images**, **Embeddings** or **Entities**.
-3. **Download to**: which of your managed connections the files go into, such as your KoboldCPP, your Ollama, or a local ONNX connection. Only programs Serene Pub can download into are offered; an online service never is. A line under it says where files will land and which memory size is set, with **Change**. On a device that can't run local ONNX models, a local ONNX connection's pill stays but is dimmed; picking it shows why on that line, and its **Get** buttons are greyed out.
-4. **Results.** **Recommended** rows come from Serene Pub's curated lists; **Hugging Face** rows come from the search. Each row has a tier chip (_Ultra Budget_ to _Enthusiast_ for GGUF files, _Fast_, _Balanced_ or _Best_ for ONNX), its size and a short description. A model you already have says so instead of offering **Get**.
+- **The Models view.** **Get a model** on the toolbar opens it.
+- **A connection's Models tab.** **Get more…** on the Models tab of KoboldCPP or audio.cpp run by Serene Pub, of an Ollama connection, or of a local ONNX connection opens it with that connection as the destination, and offers, in the sentence's _for_ part, only the kinds of model that connection can hold.
+- **A loadout.** When none of your models can do a loadout's work, the **Model** card in its [editor](#the-loadout-editor) offers **Get a model…**, which opens it set to that kind of work: **Chat** for the Reply loadout, **Speech** for Narration, and so on.
+- **Set up chat.** Its Model step is the finder, set to chat and to that KoboldCPP.
 
-**Memory size.** **Change** asks _How much memory does this machine have?_ with five answers: 4 GB, 8 GB, 12 GB, 24 GB+ or **Not sure**. Answer with your graphics card's memory, or your Mac's memory. Rows that suit it turn gold, and the first one that fits gets the one gold **Get**. **Not sure** switches all the size hints off rather than guessing. The answer is remembered in this browser, so a phone and a desktop can answer differently.
+The finder is part of the Models view, not a window over it, so your models stay in sight while you search. When the view is wide enough it opens beside the list, as a model's own settings do; when it is narrow (the dock, half width, a phone) it replaces the list, and **Back** returns to it. Picking a model in the list puts that model in its place.
 
-**Get.** For a GGUF model, **Get** opens a list of the model's files (its _quantizations_: smaller files are faster and lose a little quality). With a memory size set, each says _Fits in 8 GB_, _Tight in 8 GB_ or _Too big for 8 GB_. Choose one and press **Download**. Progress shows in the row and in [Downloads](#downloads). An Ollama model starts pulling at once; an ONNX model goes into the local cache.
+Getting a model doesn't close it: the downloads tray shows the progress. From the top it is the search box, one sentence, then the results:
+
+1. **Search.** Typing narrows the recommended models at once and, after a pause, searches Hugging Face for GGUF files. For a local ONNX connection there is no search; **Add from Hugging Face by id** takes a model's id instead. **Speech** and **Transcription** list the recommended audio models.
+2. **The sentence.** One line that says what you are looking at, such as _Chat models for KoboldCPP · sized for 8 GB_. Each part you can change is a button that opens a short list of choices; pick one and the list closes.
+    - The _for_ part: **Chat**, **Images**, **Embeddings**, **Entities**, **Speech** or **Transcription**.
+    - The part after _models for_, where it downloads to: which of your programs the files go into: your KoboldCPP, your Ollama, your audio.cpp, or a local ONNX connection. Only programs Serene Pub can download into are offered; an online service never is. **Speech** goes to audio.cpp, or to KoboldCPP for the speech models made for it; **Transcription** goes to audio.cpp.
+    - The _sized for_ part, the memory size: _How much memory does this machine have?_ with five answers: 4 GB, 8 GB, 12 GB, 24 GB+ or **Not sure**. For a local ONNX connection this part is left out, because those models run on the processor.
+
+    A part the door already fixed, or that has only one choice, is plain words rather than a button. With nothing that can hold that kind of model, the sentence leaves out the destination and a card under it says _Nothing here can hold a chat model yet._, with a button to add KoboldCPP (or audio.cpp) run by Serene Pub where that would help. On a device that can't run local ONNX models, a local ONNX connection stays in the list, dimmed, with its reason on hover; picking it shows the reason on a line under the sentence, and every **Get** is greyed out. Other lines under the sentence say when your KoboldCPP isn't set up or switched on yet and, until you choose a memory size yourself, why Serene Pub guessed the one it shows.
+
+3. **Results.** **Recommended** rows come from Serene Pub's curated lists; **Hugging Face** rows come from the search. Each row has a tier chip (_Ultra Budget_ to _Enthusiast_ for GGUF files, _Fast_, _Balanced_ or _Best_ for ONNX), its size and a short description. A speech or transcription model is one row, however many precisions it comes in.
+
+**What you already have.** Every row, Hugging Face rows included, says which of your programs already hold that model, such as _You have this on KoboldCPP_ or _Also on Ollama_. A model the destination already holds says so instead of offering **Get** (a badge, **On disk** or **Pulled**, takes the button's place). One that only another program holds keeps its **Get**, worded for where it goes, such as **Get for Ollama too**. Each program keeps its own copy (Ollama stores models its own way), so the line is there to stop a download you didn't mean, not to share the file.
+
+**Memory size.** The memory part of the sentence (also **⋯ › Change memory tier** in the finder's header when it opens beside the list) asks the question above. Answer with your graphics card's memory, or your Mac's memory. Rows that suit it turn gold, and the first one that fits gets the one gold **Get**. **Not sure** switches all the size hints off rather than guessing. The answer is remembered in this browser, so a phone and a desktop can answer differently.
+
+**Get.** When a model comes in more than one file, **Get** always opens a list of them first, under the row you pressed it on, with the recommended one already chosen (or else the largest that fits your memory size, or else the first). For a GGUF model the files are its _quantizations_: smaller files are faster and lose a little quality. For an ONNX model or an audio.cpp model they are its _precisions_, such as _fp16_ or _q8_ for ONNX and _q8_0_ or _bf16_ for audio.cpp. Where a file's size is known and a memory size is set, each says _Fits in 8 GB_, _Tight in 8 GB_ or _Too big for 8 GB_. A file whose size isn't given reads _Size not listed_ (Hugging Face search results often don't give one), and a small quantization that fits says _Fits · lower quality_. Choose one and press **Download**. (A local ONNX model's **Download** opens the same list of precisions under its row.) A model that comes as one file shows that file's name on its row, and **Get** fetches it straight away. Progress shows in the row and in [Downloads](#downloads).
+
+**The model page.** Press a result's **name** and that model's own page opens inside the finder. **Back**, or Escape, returns to the results with your search and your place in the list kept.
+
+- Its title is the model's name; under it, the owner and _Recommended_ or _Hugging Face_, and the tier chip.
+- Then the description, then the facts that are known: **Parameters**, **Base model** (the model a fine-tune was made from, when Hugging Face names one), **Context** (such as _32k tokens_), **Licence**, **Languages** (the first three, then _+2 more_), **Downloads** and **Updated**. A fact that isn't known is left out, never shown as unknown. A recommended local ONNX model shows what its list says: its parameters, licence and languages.
+- Then the _You have this on …_ line.
+- When the files go to KoboldCPP or Ollama, the page reads the model's facts and its file sizes from Hugging Face as it opens: _Reading the repo from Hugging Face…_, then the facts. If it can't, one sentence says why, such as _Hugging Face would not answer for that repo._ or _Rate limited. Please wait a moment and try again._ The facts are kept for a day.
+- Then the files, headed _Pick a size_ (or _Choose a precision_), with the recommended one already chosen (else the largest that fits your memory size, else the first). Each shows its size and fit, and a bar for how much of your memory size it takes; there is no bar under **Not sure**, or where the size isn't known.
+- At the foot: _To KoboldCPP · ‹where the files land›_ and **Download** with the file you chose, such as **Download Q4_K_M**, or the **On disk** or **Pulled** badge when the destination already has it, or a progress bar and **Cancel** while it arrives. This is also where you see where files will land.
+- An Ollama library name with no files says _Ollama's library lists no quants for this name._, and **Download** pulls the name the list gives. A repo that lists no files keeps **Download** greyed out (_That repo lists no files to get_ on hover).
+
+- **Ollama** pulls the file you chose. A recommended Ollama model named from Ollama's own library has no files to choose between, and says _Ollama's library lists no quants for this name._
+- **ONNX**: the model goes into the local cache at the precision you chose, and is loaded at that precision.
+- **audio.cpp**: the package lands in audio.cpp's Models folder and is enabled; audio.cpp serves it from its next start (see [audio.cpp, run by Serene Pub](#audiocpp-run-by-serene-pub)).
+- **A speech model made for KoboldCPP** lands in KoboldCPP's text models folder: the model file, then the codec file it needs (Kokoro needs none).
+
+**When a download is refused.** Speech and transcription models are kept apart from chat models, because KoboldCPP and audio.cpp each need their own conversion of the same model:
+
+- A speech model fetched for KoboldCPP under **Chat** or **Images** says _That is a speech model; get it under Speech._ A transcription model says _That is a transcription model; get it under Transcription._
+- A model fetched for KoboldCPP under **Speech** that isn't one says _That is not a speech model._
+- A speech model made for KoboldCPP, sent to audio.cpp, says _That one is run by KoboldCPP; get it for KoboldCPP instead._
 
 ### Downloads
 
-Everything the pub is downloading, in one list: model files for KoboldCPP, the KoboldCPP program itself, Ollama pulls and ONNX models. **View** on the tray at the foot of the Models list opens it above the tray, without leaving the list; **Hide** closes it. A managed connection's **Arriving** tab in the Connections view shows the same list. Each row has the name, where it is going, a progress bar (_1.2 of 4.1 GB_) and **Cancel**. Finished downloads stay listed until you press **Clear finished**, at the top of the list above the tray. Serene Pub never shows a time estimate.
+Everything the pub is downloading, in one list: model files for KoboldCPP and audio.cpp, the two programs themselves, Ollama pulls and ONNX models. **View** on the tray at the foot of the Models list, or the **↓ n** button (_Downloads_) on the Models toolbar, opens it above the tray, without leaving the list; **Hide** closes it. A managed connection's **Arriving** tab in the Connections view shows the same list. Each row has the name, where it is going, a progress bar (_1.2 of 4.1 GB_) and **Cancel**. Finished downloads stay listed until you press **Clear finished**, at the top of the list above the tray. Serene Pub never shows a time estimate.
 
 ## The Connections view
 
@@ -85,7 +134,7 @@ There are three places in the view: the list, a connection, and a model. **Back*
 
 ### The index, top to bottom
 
-- **Add** opens a menu: **A connection** (the **New connection** dialog, with every service), **KoboldCPP, run by Serene Pub** (see [below](#koboldcpp-run-by-serene-pub)) and **Ollama**. The Android app does not offer KoboldCPP or Ollama here, because it cannot run them. **Ctrl/Cmd+N** opens the New connection dialog.
+- **Add** opens a menu: **A connection** (the **New connection** dialog, with every service), **KoboldCPP, run by Serene Pub** (see [below](#koboldcpp-run-by-serene-pub)), **audio.cpp, run by Serene Pub** (speech; see [below](#audiocpp-run-by-serene-pub)) and **Ollama**. The Android app does not offer KoboldCPP, audio.cpp or Ollama here, because it cannot run them. **Ctrl/Cmd+N** opens the New connection dialog.
 - **Filter** matches a connection's name, service, address and the names of its models. The menu beside it narrows the list to _Needs attention_ (every gold or red connection: unfinished or broken), or the connections that can serve _Chat_, _Images_, _Embeddings_ or _Entities_. The two buttons after it show the connections as a **list** or as **cards**; your choice is remembered in this browser.
 - **The connections**, in two groups: **On this machine** (_private · free_) and **Services** (_billed per message_). The group comes from the kind of connection: KoboldCPP, Ollama, LM Studio, llama.cpp, Stable Diffusion, ComfyUI and the local ONNX models count as on this machine wherever their address points, and OpenAI, Anthropic, the OpenAI-compatible services and the online image services (AI Horde, NovelAI, Black Forest Labs) count as services.
 
@@ -126,7 +175,7 @@ With nothing connected, the Connections view asks _Where should the writing happ
 Tap a connection and its view opens. For a service you connect to, such as OpenRouter, Anthropic or your own llama.cpp, it has a status card and up to two tabs.
 
 - **Status card.** One word and one sentence: _Reachable · Answered just now_, _Not reachable · ECONNREFUSED_, _Couldn't list models · 401 Unauthorized_, or _Not checked yet_. **Test** asks the service using the settings as they are on screen, saved or not; once pressed, it reads **Test again**. On the connection the Embeddings loadout uses, **Test** also embeds one word with that loadout's model, so a model swapped on the host fails the test. A service that still needs a key says **Needs an API key**, in gold, with a **Get a key ↗** link to that service's key page.
-- **Models tab**, when the service offers models to choose from: how many it lists and how many are no longer listed, **Refresh**, the models themselves, each with **Use** (a table with context and prices where the view is wide enough), and **Add by name** for a service that doesn't publish a list. Tap a model to open its own settings. While the Reply loadout is empty, a model that can chat says **Use in Reply** instead of **Use**. Once it is filled, its model is listed first, with its star. A **Filter N models** box narrows the list by a model's name or id: it is always there in the table, and in the narrower list once there are more than 12 models.
+- **Models tab**, when the service offers models to choose from: how many it lists and how many are no longer listed, **Refresh**, the models themselves, each with **Use** (a table with context and prices where the view is wide enough), and **Add by name** for a service that doesn't publish a list. Tap a model to open its own settings. While the Reply loadout is empty, a model that can chat says **Use in Reply** instead of **Use**. Once it is filled, its model is listed first, with its star. On an OpenRouter key with no credit, the free models come next, ahead of the paid ones it can't use. A **Filter N models** box narrows the list by a model's name or id: it is always there in the table, and in the narrower list once there are more than 12 models.
 
 The status card's second line names the one thing to do next, by the name of the button to press:
 
@@ -136,6 +185,7 @@ The status card's second line names the one thing to do next, by the name of the
 | You changed something and haven't saved it                       | unfinished (gold)                                              | _Press **Save** to keep these changes._                                                                                 |
 | A test or the model list failed                                  | broken (red) with a saved key; unfinished (gold) with none yet | What went wrong, then _Check the key and press **Test again**._                                                         |
 | It lists models that can chat, and the Reply loadout is empty     | unfinished (gold)                                              | _Pick a model under **Models** and press **Use in Reply**._, with a **Choose a model** button that opens the Models tab |
+| The same, on an OpenRouter key with no credit                    | unfinished (gold)                                              | _This key has no credit yet, so paid models would be refused: pick a free one under **Models**, listed first, and press **Use in Reply**._, with **Choose a model** |
 | Sessions reply with one of its models                            | ready (green)                                                  | _Replies come from **Nemo 12B**._, with **Start a session**                                                             |
 
 These are the five states every connection row is in: **ready** (green), **idle** (grey), **unfinished** (gold), **busy** (amber) and **broken** (red); the [state table](#the-index-top-to-bottom) lists the word each row shows for them. The dot beside the card's first line uses the same five: green once the service answered or listed its models, amber while a test or a check is running, red when either failed, grey before anything has been asked.
@@ -162,6 +212,8 @@ One loadout per kind of work is its **default**, marked gold: _the Reply loadout
 
 **Unfilled falls back.** A loadout with no model yet is **unfilled**, and anything that names it simply runs on the default loadout of its kind. So on a fresh pub everything runs on the Reply loadout's one model, and you only fill _Extraction_ when you want summaries on something else, say a small fast model. The tile says _Unfilled — falls back to Reply_ until you do.
 
+**Vision** is the one loadout of another kind that falls back to Reply: it is the work where a picture is the input — the Likeness tab's **Describe from image**, a caption — and, unfilled, it runs on the Reply loadout's model exactly when that model reads pictures (its tile says _Unfilled — falls back to Reply_ then, and _nothing to fall back to yet_ when it doesn't). A picture attached to a message in a session doesn't go through Vision at all: the reply's own model reads it when it can (see [Images and files](#images-and-files)). Fill Vision when you want pictures read by a different model from the one that writes replies.
+
 ### Loadouts, top to bottom
 
 - **The status strip** says whether sessions can reply: _Replies: Claude Sonnet 4.5 · Anthropic_ with **Change**, or _Sessions can't reply yet_ and _Fill the Reply loadout to start_, with one gold button: **Fill the Reply loadout**, or [Set up chat](#set-up-chat) while nothing can chat at all.
@@ -178,10 +230,10 @@ Tap a tile and its **editor** opens; **New loadout** opens the same editor empty
 
 Then three cards, each opening on one sentence that says what its choice decides:
 
-- **Model.** Every model you have that can do this kind of work, from every connection, with the connection named on each row. The chosen model sits above the list so it never scrolls away, with its context size, its price, what it does natively (_Schema door_, _Native tools_, _Sees pictures_, _Takes references_) and, when this loadout's work needs something the model can't do, what a run will do instead, in the receipt's words: _Runs with JSON by instruction (no schema door)_, or _references dropped_. Every row says the same for this loadout: a _Schema door_ chip on a model that answers the need, _JSON by instruction (no schema door)_ on one that doesn't. **Clear** leaves the loadout unfilled. **Fill for me** chooses for you and says why. It picks the model you have that answers the loadout's needs (one with a schema door for _Extraction_, one with native tool calls for _Tool calling_), keeps the Reply loadout's model when nothing beats it so no second model loads, and picks the loadout's own sampling config if none is chosen. Like any other choice, it is saved only when you press **Save**.
+- **Model.** Every model you have that can do this kind of work, from every connection, with the connection named on each row. The chosen model sits above the list so it never scrolls away, with its context size, its price, what it does natively (_Schema door_, _Native tools_, _Sees pictures_, _Takes references_) and, when this loadout's work needs something the model can't do, what a run will do instead, in the receipt's words: _Runs with JSON by instruction (no schema door)_, or _references dropped_. Every row says the same for this loadout: a _Schema door_ chip on a model that answers the need, _JSON by instruction (no schema door)_ on one that doesn't. **Clear** leaves the loadout unfilled. **Fill for me** chooses for you and says why. It picks the model you have that answers the loadout's needs (one with a schema door for _Extraction_, one with native tool calls for _Tool calling_), keeps the Reply loadout's model when nothing beats it so no second model loads, and picks the loadout's own sampling config if none is chosen. Like any other choice, it is saved only when you press **Save**. When none of your models can do this loadout's work, the card says so and offers **Get a model…**, which opens [Get a model](#get-a-model) set to that kind of work.
   - **Finding a model in a long list.** Type in the filter box to match a model or connection name. The filter button beside it narrows the list further: **Where it runs** (_On this machine_ or _Services_), **Connection**, **Does natively** (only models with a schema door, native tools, and so on; what the loadout needs is listed first) and **Order** (_By connection_, _By name_, _Cheapest first_, _Largest context first_). Each choice shows how many models it would leave. Whatever is narrowing the list shows as a chip under the box, with an **×** to drop it, and a count says how many of the models are showing.
 - **Sampling.** The sampling configs that fit this kind of model, each with its main settings read out (_Temperature 0.7 · 512 tokens max_, or _30 steps · CFG 7 · 1024×1024_). The one the loadout ships with comes first, marked **Best with**. A long list has its own filter box. **Open in Sampling** opens the chosen one to edit. If you change the model and the chosen config doesn't fit it any more, the card switches to the loadout's built-in config and says so.
-- **Workflow**, for a ComfyUI picture loadout only. Choose the workflow it draws with; a sentence says what that workflow takes and makes. Below it are the workflow's **dials** (its steps, its CFG, a LoRA's strength…): each shows _Default 20_ until you change it here, then _Set here · default 20_ with **Use default** to put it back. The values you set belong to this loadout, so two loadouts can draw with one workflow at different settings. A pipeline step can still set its own.
+- **Workflow**, for a ComfyUI picture loadout only. Choose the workflow it draws with; a sentence says what that workflow takes and makes. Left empty, the loadout draws with the shipped text-to-image starter that matches its sampling config (_SD 1.5_, _SDXL_ or _Flux_), and the picture's form and details say so; with any other sampling config a workflow has to be chosen. Below it are the workflow's **dials** (its steps, its CFG, a LoRA's strength…): each shows _Default 20_ until you change it here, then _Set here · default 20_ with **Use default** to put it back. The values you set belong to this loadout, so two loadouts can draw with one workflow at different settings. A pipeline step can still set its own.
 
 **At the bottom:** **Merge into…** and **Unmerge** are explained [below](#merging). **Delete** removes one of your own loadouts after asking; anything that named it runs on its kind's default instead.
 
@@ -192,6 +244,39 @@ A **merged** loadout's editor says so at the top, with **Open** for the loadout 
 A plugin may ship its own loadout, such as _Extract_, that does the same work as one you already have. **Merge into…** on the plugin's loadout sends it to yours: while merged, anything that names _Extract_ runs on _Extraction_, and the receipt says _Extract → Extraction (merged)_. Its own model and sampling are kept, unused, and **Unmerge** brings them back. A loadout merges only into one that does the same kind of work, and Serene Pub refuses a merge that would make a loop. Installing a plugin never changes which model runs: its loadouts arrive unfilled and unmerged, as soon as the plugin is switched on. Switching the plugin off keeps its loadouts, with anything you filled in; their tiles say _plugin off_.
 
 A **session never picks a loadout**, just as it never picks a connection.
+
+## Speech
+
+Serene Pub can read a session's lines aloud. Which sessions do, and how, is the session's [Read aloud](./sessions.md#read-aloud) setting; this section is the pub's half: what can speak, and with which voices.
+
+**What can speak.** A model that **Speaks** on one of these connections: **OpenAI (Official)**, **KoboldCPP** (one you run, or the one Serene Pub runs), **Ollama**, **audio.cpp** (one you run, or the one Serene Pub runs), or **ElevenLabs**. [audio.cpp, run by Serene Pub](#audiocpp-run-by-serene-pub) is the route that needs no graphics card: it speaks on the processor alone. The KoboldCPP that Serene Pub runs loads a speech model (Kokoro, Qwen3-TTS) beside its text model, so narration needs no second server and no reload between a reply and its audio; its status card's **Details** shows the **Speech model** that is loaded. To fetch a speaking model, open [Get a model](#get-a-model) under **Speech**: audio.cpp's packages, or the speech models made for KoboldCPP. Tick **Speaks** on the model under [What it's for](#what-a-model-is-for), then put it in the **Narration** loadout. If the loadout says the connection cannot do **Speech**, switch **Speech** on in the connection's settings: for an OpenAI-compatible server or Ollama, whether it speaks is only known once it is asked. In this version Narration is the one place speech runs, so a pub has one speaking model at a time.
+
+:::note OpenAI's older speech models are going away
+OpenAI is shutting down its current speech models on 2027-01-06. A model that is affected shows a ⏳ chip with the date. Pick a newer one in the speaking loadout before then.
+:::
+
+**Where a model's voices come from.** On a speaking model's page, the **Voices** table lists what the model can say, and each row says where it came from:
+
+- **Discovered**: the service told Serene Pub (OpenAI's list, ElevenLabs' library, KoboldCPP's or audio.cpp's own voices).
+- **Catalogue**: the service gives no list, so Serene Pub filled in the voices it knows that model ships with.
+- **Typed**: you entered them yourself, for a service or model that has neither.
+
+Each row can carry labels (gender, accent, age, language, use case) that the voice pickers offer as filters, and a ▶ preview where the service has one. **Refresh** asks the service again. It also fills in what the model can be directed with: some take a direction in words, some take tags such as _whispers_, some only read evenly. Serene Pub shows the controls a voice honours, and never sends one it doesn't.
+
+### The voicebank
+
+**Loadouts → Voices** is the pub's **voicebank**: voices with a name you choose (_Narrator_, _Old Bruno_). Each voice lives on a **loadout**: you pick one of your speaking (_text to audio_) loadouts, and the voice is one of that loadout's model's voices, with the speed and other settings you want. The Narration loadout is no longer the one place voices come from, so a pub can keep voices on several speaking models. A character can be given a voicebank voice; the narrator, the session and its envoys can use one too. Naming a voice once is easier than repeating a service's voice id on every card, and it survives a change of voice behind it.
+
+- **New voice** makes an entry on a speaking loadout (the default speaking loadout to begin with). The first voice on an empty voicebank is made for you, **Narrator**, and becomes Narration's **Voice**.
+- **Voice and Other speakers.** The Narration loadout (and any other speaking loadout) has two lines at the top of its [editor](#the-loadout-editor). **Voice** is the narrator: it reads the narration and every line nobody else voices. If the Voice entry is turned off, moved to another loadout or deleted, the loadout's next voice takes over at once. **Other speakers** is the voice for any speaker without a voice of their own (a character, an envoy, a player's seat). It is **Auto** until you pin one voice. Turning a pinned voice off (or moving or deleting it) sends Other speakers back to Auto.
+- **How Auto picks.** Each speaker without a voice of their own gets a voice different from the narrator's, never the narrator's, and the pub keeps that pick for the whole session so a character does not change voice halfway. If a pick is turned off or deleted, the next line chooses again. With only one voice on the loadout, everyone shares the narrator's; add a second voice to Narration to tell them apart. The session's Read aloud card shows what each envoy will get.
+- The entry form reads: **Name**, **Loadout** (a loadout with no model yet is greyed, _no model yet_), **Voice** (hidden when the model designs the voice from a description), **Enabled**, **Labels**, then the voice fields: **Description** (_The voice itself_ on a voice-designing model), **Language**, **Speed**, any extra dials the model lists, and **Try the voice**. Entries that a plugin ships can be switched on or off but not edited.
+- **An entry is skipped** (and the line is spoken in the next voice that fits) when it is turned off, when it has no loadout (the loadout was deleted: pick one in Loadouts → Voices), or when its loadout has no model yet. The entry says which, in a line under its name. There is no fallback to another loadout's model, because a voice belongs to its model.
+- **Two voices on different models in one line** are fine: each part is spoken by its own model and the parts are joined into one audio file. Parts in WAV are resampled to the first part's rate; if the formats differ, only the first part is kept. The line's receipt notes the model switch.
+- If a plugin's entry and one of yours share a name, yours is used. Turning yours off does **not** hand the name back to the plugin's: the turned-off entry still shadows it, and the line is spoken in the next voice that fits instead. Delete your entry to let the plugin's be used.
+- **Try the voice** speaks a line with the form's voice, description, language, speed and seed before you save; nothing it speaks is kept. **Seed** and **Re-roll** (a new random seed, tried at once) sit beside it. The seed picks which person a voice-designing model becomes; the same description with the same seed is the same voice. Leave it blank and the description alone decides. Services that take a seed receive it; others never see it.
+
+Only administrators open this view; members never see it. A member can still read a voice's name when a character names one.
 
 ## Admin › Models › Loadouts
 
@@ -238,6 +323,7 @@ A search that finds nothing says _No service called "…"_, with two buttons: **
 | **KoboldCPP, run by Serene Pub**                                           | On this machine                 | Most people running models locally. Serene Pub installs and looks after it. Added from **Add**, not from this dialog.                                                                |
 | **Ollama**                                                                 | On this machine or your network | People who already use Ollama. Chat and embeddings from one connection.                                                                                                              |
 | **LM Studio**                                                              | On this machine or your network | People who already use LM Studio and its window for managing models. Chat and embeddings from one connection.                                                                        |
+| **audio.cpp, run by Serene Pub**                                           | On this machine                 | Reading sessions aloud without a graphics card, and transcription. Serene Pub installs and looks after it. Added from **Add**, not from this dialog.                              |
 | **KoboldCPP**                                                              | On this machine or your network | A KoboldCPP you start yourself.                                                                                                                                                      |
 | **Llama.cpp**                                                              | On this machine or your network | People who build and run `llama-server` themselves. Embeddings too, from a server started for them.                                                                                  |
 | **OpenRouter**, **OpenAI (Official)** and other OpenAI-compatible services | Online                          | Hosted models. OpenRouter reaches hundreds with one key. Several also embed (see [Embeddings](#embeddings-from-an-openai-compatible-service)).                                       |
@@ -247,7 +333,7 @@ A search that finds nothing says _No service called "…"_, with two buttons: **
 | **AI Horde**                                                               | Online, free                    | Images at no cost from volunteers' computers, in a queue. See [AI Horde](#ai-horde).                                                                                                  |
 | **NovelAI (Image)**                                                        | Online                          | Anime-style images with a NovelAI subscription. See [NovelAI](#novelai).                                                                                                              |
 | **Black Forest Labs (FLUX)**                                               | Online                          | FLUX images, good at keeping a character from reference pictures. See [Black Forest Labs](#black-forest-labs-flux).                                                                   |
-| **Local embeddings (ONNX)**, **Local named entities (ONNX)**               | Inside Serene Pub               | Helping characters remember a long story. Greyed out, with the reason, on devices that can't run it (Android, and some desktop builds). See [Local ONNX models](#local-onnx-models). |
+| **Local embeddings**, **Local named entities**               | Inside Serene Pub; made by Serene Pub, never added by hand               | Helping characters remember a long story. Dimmed, with the reason, on devices that can't run it (Android, and some desktop builds). See [Local ONNX models](#local-onnx-models). |
 
 :::note Most people: pick one
 Running models on your own computer: **KoboldCPP, run by Serene Pub**. Using an online service: **OpenRouter**. Either can be added to later.
@@ -265,7 +351,7 @@ The same connection serves **embeddings**: LM Studio says which of its models ar
 
 ## Ollama
 
-Connects to an Ollama you installed and run yourself. Its models are whatever Ollama has pulled, listed automatically, and one connection serves both chat and **embeddings** from the same host. To use embeddings, pull an embedding model (for example `ollama pull nomic-embed-text`, or from the connection's **Get** tab) and choose it for Embeddings. Ollama 0.6 or newer says which models are which; with an older Ollama every model is offered for both.
+Connects to an Ollama you installed and run yourself. Its models are whatever Ollama has pulled, listed automatically, and one connection serves both chat and **embeddings** from the same host. To use embeddings, pull an embedding model (for example `ollama pull nomic-embed-text`, or with **Get more…** on the connection's Models tab) and choose it for Embeddings. Ollama 0.6 or newer says which models are which; with an older Ollama every model is offered for both.
 
 The form shows the **Base URL** (default `http://localhost:11434/`). **Request settings** hold **Keep Alive**, a number and a unit (default `5m`), which is how long Ollama keeps a model loaded, and **Stream**. Pulling, deleting and updating happen in the connection's own view: see [Ollama, managed](#ollama-managed).
 
@@ -308,6 +394,8 @@ An **OpenAI (Official)** connection can hear and speak as well as write. Three l
 - **Transcription** writes down what a voice note says, so a reply whose model can't hear still reads it. Put a transcription model in it (`whisper-1`, `gpt-4o-transcribe`); each recording is heard once and the words are kept with the file.
 - A reply model that **Hears** (an OpenAI audio model) is sent voice notes as sound, WAV or MP3, instead of their words. Tick **Hears** on it.
 - **Spoken reply** is for a model that writes a reply and speaks it in the same call. A step asks for it when its **Outputs** include audio; the reply's sound then plays under the message, and its transcript is the message's text. Tick **Speaks** on the model. The voice is the **Narration** loadout's sampling (**Voice**, **Speed**), unless the step picks its own **Speech sampling**.
+
+To have sessions read their lines aloud, see [Speech](#speech).
 
 A llama.cpp server can also be sent voice notes when its model was loaded with an audio projector: switch on **Hearing** under **What this connection can do**. Other connection types don't send sound to their model; their replies get the words instead, through the Transcription loadout.
 
@@ -400,7 +488,7 @@ Each switch is sent to KoboldCPP with every request, on both its chat and text-c
 
 ## Stable Diffusion (A1111-compatible)
 
-For images from a program that speaks the AUTOMATIC1111 API: AUTOMATIC1111 itself, Forge, SD.Next, or a KoboldCPP with an image model loaded. Point the **Base URL** at it (default `http://localhost:5001`). Its models are the checkpoints the program lists. How a picture is drawn (size, steps, CFG) comes from an image [sampling config](#sampling-configs). If you use the KoboldCPP run by Serene Pub, you don't need this connection: it draws too (see [Images from the same connection](#images-from-the-same-connection)).
+For images from a program that speaks the AUTOMATIC1111 API: AUTOMATIC1111 itself, Forge, SD.Next, or a KoboldCPP with an image model loaded. Point the **Base URL** at it (default `http://localhost:7860`, the port those programs listen on; a KoboldCPP you run yourself is usually `http://localhost:5001`). Its models are the checkpoints the program lists. How a picture is drawn (size, steps, CFG) comes from an image [sampling config](#sampling-configs). If you use the KoboldCPP run by Serene Pub, you don't need this connection: it draws too (see [Images from the same connection](#images-from-the-same-connection)).
 
 ## ComfyUI
 
@@ -435,7 +523,7 @@ Each row's **⋯** holds **Edit** (or **View** for a starter), **Duplicate**, **
 
 Serene Pub can download KoboldCPP, start and stop it, fetch models into it, and load whichever model a request needs. All of that lives on one connection, **KoboldCPP, run by Serene Pub**, and its own view. Add it with **Add › KoboldCPP, run by Serene Pub**, or with the door of the same name on a new pub. **Remove KoboldCPP from this pub**, in the view's **⋯** menu or at the foot of its Settings tab, switches it off again; files already on disk are left where they are.
 
-The view starts with a setup screen. Once set up, a **status card** sits at the top and four tabs sit under it: **Models**, **Get**, **Arriving** and **Settings**. On the index its row reads _Not set up_ until setup is done, then something like _Stopped · starts on first use · 3 on disk_ or _Running · Nemo 12B loaded_. A stopped KoboldCPP starts by itself the first time something needs it.
+The view starts with a setup screen. Once set up, a **status card** sits at the top and three tabs sit under it: **Models**, **Arriving** and **Settings**. On the index its row reads _Not set up_ until setup is done, then something like _Stopped · starts on first use · 3 on disk_ or _Running · Nemo 12B loaded_. A stopped KoboldCPP starts by itself the first time something needs it.
 
 ### Managed or External mode
 
@@ -454,24 +542,25 @@ Managed mode goes straight to the build picker. External mode asks for the **Add
 
 ### The status card
 
-In Managed mode the card shows the process state (_Running_, _Starting_, _Stopped_, _Crashed_) with **Start** or **Stop**, how long it has been running, the **Loaded model** with **Unload** to free its memory without stopping KoboldCPP, and an **Update** button when a newer KoboldCPP is out. If KoboldCPP failed to start or crashed, the error is shown under the card. A start that fails, including the first start after **Download & Start**, leaves the card on _Crashed_ with the reason and **Start**, so you can try again; it never stays on _Starting_. **Details** opens live performance figures: busy or idle, generation and prompt speed in tokens per second, the last request's timings, and totals. In External mode the card says whether the address answered and which version it runs.
+In Managed mode the card shows the process state (_Running_, _Starting_, _Stopped_, _Crashed_) with **Start** or **Stop**, how long it has been running, the **Loaded model** with **Unload** to free its memory without stopping KoboldCPP, and an **Update** button when a newer KoboldCPP is out. If KoboldCPP failed to start or crashed, the error is shown under the card. A start that fails, including the first start after **Download & Start**, leaves the card on _Crashed_ with the reason and **Start**, so you can try again; it never stays on _Starting_. The card only ever shows a KoboldCPP that Serene Pub started: if some other program already holds the port, the start fails with _Port … is already in use by a program Serene Pub didn't start_, and nothing is taken over — stop that program, or change the port. A KoboldCPP of its own left over from an earlier run (after a crash, say) is ended and replaced. Whenever Serene Pub itself ends, however it ends, the KoboldCPP it started ends with it: a small process beside it watches for that, so a model is not left holding your graphics memory after a crash. **Details** opens live performance figures: busy or idle, generation and prompt speed in tokens per second, the last request's timings, and totals. In External mode the card says whether the address answered and which version it runs.
 
 ### Models tab
 
-Lists every model file the connection has, under **Text models**, **Image models** and **Embedding models**, one row each, with how many there are and **Refresh** at the top and a filter box once there are more than twelve. The Reply loadout's model comes first. **Use in Reply** on a text model, or **Use in Images** on an image model, puts it in that default loadout without loading it: it loads the first time something asks. **Use in Embeddings** on an embedding model does the same for the Embeddings loadout, but asks first, because changing the embedding model re-indexes your stored lore and messages (see [Embeddings from the same connection](#embeddings-from-the-same-connection)). Once a job has its model, the other rows' buttons read just **Use** in a narrow view. Each row's **⋯** menu has **Model settings**, a move to another section (**Move to text models**, **Move to image models** or **Move to embedding models**) for a file Serene Pub sorted wrongly, and **Delete from disk**, which asks first. A model whose **What it's for** is **Not sure** is listed under every section it can serve, since it's offered for every job. A model that's switched off, or that the runtime no longer lists, stays under its own section without **Use**.
+Lists every model file the connection has, under **Text models**, **Image models** and **Embedding models**, one row each, with how many there are, **Refresh** at the top, a filter box once there are more than twelve, and **Get more…** at the foot of the list (or in the empty list). **Get more…** switches to the Models view with [Get a model](#get-a-model) open and this connection as the destination; its line says which folder files will land in. The Reply loadout's model comes first. **Use in Reply** on a text model, or **Use in Images** on an image model, puts it in that default loadout without loading it: it loads the first time something asks. **Use in Embeddings** on an embedding model does the same for the Embeddings loadout, but asks first, because changing the embedding model re-indexes your stored lore and messages (see [Embeddings from the same connection](#embeddings-from-the-same-connection)). Once a job has its model, the other rows' buttons read just **Use** in a narrow view. Each row's **⋯** menu has **Model settings**, a move to another section (**Move to text models**, **Move to image models** or **Move to embedding models**) for a file Serene Pub sorted wrongly, and **Delete from disk**, which asks first. A model whose **What it's for** is **Not sure** is listed under every section it can serve, since it's offered for every job. A model that's switched off, or that the runtime no longer lists, stays under its own section without **Use**.
 
 Whether a file is a text, image or embedding model is read from inside the file, not guessed from its name or folder. An embedding model that an earlier version listed under Text models moves to Embedding models the first time the list refreshes after updating; one you moved yourself stays where you put it.
 
-### Get and Arriving tabs
+### Arriving tab
 
-**Get** is the [model finder](#the-model-finder) with this connection as the destination; its line says which folder files will land in. **Arriving** is the [Downloads](#downloads) list.
+**Arriving** is the [Downloads](#downloads) list.
 
 ### Settings tab
 
 - **Binary** (Managed mode): the installed build and version, the latest version, **Check for updates**, **Change binary**, and **Update binary** when there is a newer one.
 - **Model unload timer**: seconds of no use before the loaded model is unloaded (default 300; 0 means never).
+- **Keep the text and the image model loaded together**: on by default; see [Images from the same connection](#images-from-the-same-connection).
 - **Subprocess idle timeout**: seconds of no use before KoboldCPP itself is stopped (default 1800; 0 means never).
-- **Server URL** and **Port** (default 5001): where Serene Pub reaches KoboldCPP. Changing the port needs a restart. If the two disagree, a warning says so: requests go to the Server URL, so make them match.
+- **Server URL** and **Port** (default 5001): the port is where KoboldCPP listens, and changing it needs a restart. The Server URL shows the address Serene Pub reaches it at; it is made from the port, so it can't be edited in Managed mode.
 - **Base URL** (External mode only): the address of your KoboldCPP.
 - **Models directory**: where text and embedding models are stored and downloaded to. It must be set before anything can be listed or downloaded.
 - **Image models directory**: where image models go. Left blank, image models are looked for in the **Models directory**. Setting it never moves files; models already in the Models directory keep working.
@@ -486,7 +575,7 @@ Further down the Settings tab, under the connection's own settings, **Managed mo
 - **Flash attention**: faster processing, using less graphics memory, on graphics cards that support it. Off by default.
 - **Batch size**: how much of the prompt is processed at a time. Default `512`.
 
-A text model can also have a **Vision projector**: its mmproj file, which lets it read images. Set it in the model's **Model settings** (the **⋯** menu in the Models tab), as the file's name; the file must be in the Models directory, and files whose names contain `mmproj` are suggested. Setting one turns **Vision** on for that model. Clear the box to load the model without it.
+A text model can also have a **Vision projector**: its mmproj file, which lets it read images. Set it in the model's **Model settings** (the **⋯** menu in the Models tab), as the file's name; the file must be in the Models directory, and files whose names contain `mmproj` are suggested. Setting one turns **Vision** on for that model. Clear the box to load the model without it. A recommended model tagged *vision* in the finder arrives paired: **Get** fetches its projector after the model and fills this box for you, so it reads pictures from its first use. A projector is a part of a model, so it never appears in the Models list on its own.
 
 Before each request, Serene Pub checks which model KoboldCPP has loaded and with which settings. If the model, any of the three settings above, its vision projector, or a larger context size than the one loaded doesn't match, it reloads KoboldCPP with the right ones and waits (up to ten minutes) before sending the request. So a change to these settings, or switching to another model, takes effect the next time the model is used, not when you save. The first request after restarting Serene Pub also reloads once, because the new Serene Pub can't be sure what the old one loaded.
 
@@ -494,11 +583,11 @@ The connection's settings also have the **Prompt format**, **Token counter** and
 
 ### Images from the same connection
 
-The managed KoboldCPP draws as well as writes. **Use in Images** on an image model puts it in the **Images** loadout. The image model is loaded when a picture is asked for. KoboldCPP holds one model at a time, so drawing a picture unloads the Reply loadout's model and the next reply loads it again; with large models that can take minutes each way.
+The managed KoboldCPP draws as well as writes. [Get a model](#get-a-model) with the scope set to **Images** lists the image models KoboldCPP's own repository carries, in fit order for your memory tier: the best picture your card can draw leads and gets the gold **Get** (SDXL on an 8 GB card, SD 1.5 on a 4 GB one), and the memory each needs to *draw* — more than its file size — is what the fit is judged by. **Use in Images** on an image model puts it in the **Images** loadout. The image model is loaded when a picture is asked for. Whether the Reply loadout's model stays loaded beside it is measured each time: with **Keep the text and the image model loaded together** on (the default, under the connection's Managed settings), Serene Pub reads the graphics memory still free with the first model in place, compares it with what the second needs — the drawing figure from the list for an image model, the file size plus working room for a text model — and keeps both when they fit, with a gigabyte to spare; the last decision and its figures are shown on the status card, under the **Loaded model**, as well as in the server log. No reading (no NVIDIA card, a model the list has no figure for) means no room, never a guess; on a machine with no reading, a line under the checkbox says so. Off, or without room, KoboldCPP holds one of the two at a time: drawing a picture unloads the Reply model and the next reply loads it again, which with large models can take minutes each way.
 
 ### Embeddings from the same connection
 
-The managed KoboldCPP can also do the embeddings behind [search by meaning](./embeddings-and-rag.md). Put an embedding model in the Models directory (a GGUF such as nomic-embed-text or bge-m3, from the **Get** tab or copied in by hand); it is listed under **Embedding models**. **Use in Embeddings** puts it in the Embeddings loadout, after asking first and saying how much will be re-indexed.
+The managed KoboldCPP can also do the embeddings behind [search by meaning](./embeddings-and-rag.md). Put an embedding model in the Models directory (a GGUF such as nomic-embed-text or bge-m3, copied in by hand: [Get a model](#get-a-model) fetches embedding models for local ONNX and Ollama, not for KoboldCPP); it is listed under **Embedding models**. **Use in Embeddings** puts it in the Embeddings loadout, after asking first and saying how much will be re-indexed.
 
 The embedding model loads beside the text model, not instead of it. KoboldCPP keeps it in a slot of its own, on the processor by default, so it doesn't take graphics memory from the text model: embedding never unloads the text model, and a reply or a picture never unloads the embedding model. It is loaded the first time something is embedded. Changing the embedding model, or choosing one from another connection, reloads KoboldCPP once, the next time any of its models is used. Embedding counts as use, so it keeps the **Model unload timer** from running out.
 
@@ -520,31 +609,82 @@ When the download or the first start fails, read the message under the status, n
 
 On Docker or a NAS, the usual cause is that Serene Pub's data folder is a mounted volume the container can't write to. Check that it can create folders and files there before retrying the download or choosing another build.
 
+## audio.cpp, run by Serene Pub
+
+audio.cpp is a small program that speaks and transcribes. Serene Pub can download it, start and stop it, and fetch speech and transcription models for it. All of that lives on one connection, **audio.cpp, run by Serene Pub**, and its own view. It runs on the processor, so reading aloud needs no graphics card. Add it with **Add › audio.cpp, run by Serene Pub**. **Remove audio.cpp from this pub**, in the view's **⋯** menu or at the foot of its Settings tab, switches it off again; files already on disk are left where they are. Only administrators see it.
+
+The view starts with a setup screen, where you pick a build of audio.cpp. Once set up, four tabs sit under the title: **Models**, **Process**, **Arriving** and **Settings**. Packages are fetched with [Get a model](#get-a-model), under **Speech** or **Transcription**, from **Get more…** on the Models tab. This is a different thing from an audio.cpp you start yourself and add as an **audio.cpp** connection; that one is not run by Serene Pub.
+
+A stopped audio.cpp starts by itself the first time something needs it.
+
+### Choosing the build
+
+**Choose an audio.cpp build** lists the builds for this computer. Each says why you might want it, and the recommended one is marked.
+
+- **CPU (portable)**: works everywhere, needs no graphics card, and is the one to pick if unsure.
+- **Vulkan (portable)**: uses a graphics card through Vulkan, on Linux and Windows.
+- **CUDA** (Windows): uses an NVIDIA card. It also fetches the CUDA runtime, about 600 MB, along with the program.
+- **Metal** (macOS): uses the Mac's graphics hardware.
+
+Serene Pub downloads the build into the `audiocpp` folder inside its data folder, checks it against the published checksum, and starts it. A build that had no published checksum is marked _unverified_ on the Process tab. **Change binary**, on the Settings tab, brings this screen back.
+
+### Models tab
+
+Lists the audio.cpp packages on this computer (one still arriving is listed too, with its progress and **Cancel**), under **Speech** and **Transcription**, and inside each by model family. A row shows its size, its precision, _CPU-fine_ or how much graphics memory it wants, its licence, and a button for where it stands: **Disable** (a package you fetched is enabled as soon as it lands, and audio.cpp serves it from its next start) or **Enable** for one you turned off or copied in by hand, and **Remove** to delete it from disk. **Get more…** at the top switches to the Models view with [Get a model](#get-a-model) open and this audio.cpp as the destination; a model that comes in more than one precision asks which there, with the recommended one already chosen.
+
+A package Serene Pub could only guess the family of (a folder you copied in, say) shows a _guessed_ chip, and one matched by name shows _matched_. **Confirm family** on a guessed row lets you say which family it is. A folder whose family Serene Pub cannot tell at all is listed under **Unknown family**; it can be enabled once you confirm its family.
+
+**Enabling or disabling a package restarts audio.cpp**, because it reads its list of models when it starts.
+
+### Process tab
+
+The status (_Running_, _Starting_, _Stopping_, _Stopped_ or _Crashed_), the version and build, and the models audio.cpp has loaded and where each one runs. **Restart**, **Stop** and **Start**. While a change is waiting for a restart it says _Restarting to apply_. If audio.cpp crashed, the reason is shown under the status. As with KoboldCPP, only an audio.cpp Serene Pub started is shown here; a port held by another program fails the start in words, and the process ends whenever Serene Pub does.
+
+### Settings tab
+
+- **Port** (default 5002): where Serene Pub reaches audio.cpp. The connection's address is shown but not edited: it follows this port.
+- **Models folder**: where packages are stored.
+- **Unload an idle model after** (seconds): how long a loaded model may sit unused before it is unloaded.
+- **Models held at once**: how many models audio.cpp keeps loaded. Left empty, it keeps 2 on a graphics build and 1 on the CPU build.
+- **Stop audio.cpp after idle** (minutes): 0 means never.
+- **Runs on**: which hardware audio.cpp uses. Choosing the hardware, in **Admin › Hardware**, is coming; it is not built yet.
+- **Binary**: the installed build and **Change binary**.
+
+### Where files live
+
+Packages are stored in the Models folder, which is `models/audio` inside Serene Pub's data folder unless you changed it, as `<task>/<family>/<package folder>/` (for example `models/audio/tts/kokoro_tts/…`). The program itself is in the `audiocpp` folder of the data folder. Moving a package folder in by hand works: Serene Pub finds it on the next refresh and shows its family as _guessed_ until you confirm it.
+
+### Removing
+
+**Remove audio.cpp from this pub** stops audio.cpp and removes the connection. Packages and the program stay on disk, and are found again if you add it back.
+
 ## Ollama, managed
 
 Every Ollama connection gets its own view, and each one manages its own host: two Ollama connections (this machine and another computer, say) are two independent views. Serene Pub doesn't install or start Ollama; you install it yourself, and the view uses Ollama's API to list, pull and delete models. Add one with **Add › Ollama**, or on a new pub with **A custom connection**, then **Ollama**.
 
 The **status card** reads, for example, _Running · 0.30.7 · 4 models_, with an **Update available** chip when Ollama has a newer release. When Ollama can't be reached it says **Not reachable** with the address, **Check again**, **Change address** and a **Get Ollama** link.
 
-- **Models** lists what this host has pulled, under **Chat models** and **Embedding models**, one row each, with how many there are and **Refresh** at the top and a filter box once there are more than twelve; the Reply loadout's model comes first. **Use in Reply** or **Use in Embeddings** puts a model in that default loadout (embeddings ask first, since they rebuild the index); once that loadout is filled, the other rows' buttons read just **Use** in a narrow view. Each row's menu has **Model settings**, **View on ollama.com** and **Delete from disk**. A model whose **What it's for** is **Not sure** is listed under every section it can serve, since it's offered for every job. A model that's switched off, or that the runtime no longer lists, stays under its own section without **Use**.
-- **Get** is the [model finder](#the-model-finder), pulling into this host. **Arriving** is the [Downloads](#downloads) list.
+- **Models** lists what this host has pulled, under **Chat models** and **Embedding models**, one row each, with how many there are and **Refresh** at the top and a filter box once there are more than twelve; the Reply loadout's model comes first. **Use in Reply** or **Use in Embeddings** puts a model in that default loadout (embeddings ask first, since they rebuild the index); once that loadout is filled, the other rows' buttons read just **Use** in a narrow view. Each row's menu has **Model settings**, **View on ollama.com** and **Delete from disk**. **Get more…** at the foot of the list (or in the empty list) switches to the Models view with [Get a model](#get-a-model) open, pulling into this host. A model whose **What it's for** is **Not sure** is listed under every section it can serve, since it's offered for every job. A model that's switched off, or that the runtime no longer lists, stays under its own section without **Use**.
+- **Arriving** is the [Downloads](#downloads) list.
 - **Settings** shows Ollama's version with **Check for updates** (and **Download update** when Ollama runs on this machine), then the connection's name and **Base URL**.
 
 ## Local ONNX models
 
-**Local embeddings (ONNX)** and **Local named entities (ONNX)** run small models inside Serene Pub, on the processor, with no program to install and no key. They power Search by meaning and finding lore by name, both described in [Embeddings and search by meaning](./embeddings-and-rag.md).
+**Local embeddings** and **Local named entities** run small models inside Serene Pub, on the processor, with no program to install and no key. They power Search by meaning and finding lore by name, both described in [Embeddings and search by meaning](./embeddings-and-rag.md).
 
-They need a part of Serene Pub that doesn't run on every device. On devices that can't run it (Android, and some desktop builds), they stay listed but can't be used, and each place says why:
+Serene Pub makes these two connections itself, the first time it starts on a device that can run them. Their names are fixed, and they can't be deleted: to free space, use **Delete from disk** on one of their models instead. If you made a second one earlier, it is merged into the one a loadout uses (else the oldest), keeping its models and everything that pointed at it. Nothing is put in the Embeddings or Entities loadout for you: you still download a model and press **Use in Embeddings** or **Use in Entities**.
 
-- **New connection** shows both greyed out, with the reason in place of the chip that says what a service needs. Document View's **New connection** form greys out both too.
+They need a part of Serene Pub that doesn't run on every device. On devices that can't run it (Android, and some desktop builds), Serene Pub makes neither. One made earlier stays and reads **Unavailable**: it can't be used or deleted, and **Delete from disk** still removes its models' files. Each place says why:
+
+- **New connection** offers neither: Serene Pub makes both rows itself, and on a device that can't run them the rows' own pages say why.
 - In the connections list, a local ONNX connection made earlier reads **Unavailable**, with the reason. Its own view and **Admin › Connections** show the reason above its models, where **Download** and **Retry** would be.
 - **Use in Embeddings** / **Use in Entities** (or **Use**) stays greyed out on its downloaded models for as long as the reason holds: in the connection's view, a model's view, a [loadout's editor](#the-loadout-editor), **Admin › Connections**, Document View and **Admin › Models › Loadouts**, which also notes the reason on the Embeddings and Entities loadouts. Switching a loadout to another connection, or to none, still works.
-- A loadout's editor greys out **Download** and _N more are available to download_. The [model finder](#the-model-finder) dims the destination and greys out **Get**.
+- A loadout's editor greys out **Download** and _N more are available to download_. The [model finder](#get-a-model) dims the destination and greys out **Get**.
 - Named entities come only from local ONNX models, so the Entities loadout's **Get a model…** is greyed out with the reason. The Embeddings loadout's stays, because a service can do that work.
 
 Use an embeddings service instead (see [Embedding connections](./embeddings-and-rag.md#embedding-connections)); without an entity model, names the lorebook already knows are still matched.
 
-Their models come from a recommended list Serene Pub downloads from [github.com/SerenePub/serene-pub-onnx-list](https://github.com/SerenePub/serene-pub-onnx-list) (with a built-in copy for when you're offline). Each model has a tier (_Fast_, _Balanced_, _Best_), a download size, the languages it handles and its licence. **Add from Hugging Face…** adds another model by its Hugging Face id (`org/name`), after checking it has what Serene Pub needs.
+Their models come from a recommended list Serene Pub downloads from [github.com/SerenePub/serene-pub-onnx-list](https://github.com/SerenePub/serene-pub-onnx-list) (with a built-in copy for when you're offline). Until one of their models is on disk or a loadout uses one of these connections, starting Serene Pub or opening Connections or Models doesn't fetch the list: the copy already loaded, or the built-in one, answers. Each model has a tier (_Fast_, _Balanced_, _Best_), a download size, the languages it handles and its licence. **Add from Hugging Face…** adds another model by its Hugging Face id (`org/name`), after checking it has what Serene Pub needs, and asks which precision to fetch (_fp32_, _fp16_, _q8_ or _q4_), with _fp32_ chosen first.
 
 ### Download state and loadout state are independent
 
@@ -563,7 +703,7 @@ Being **In use**, the model in the Embeddings or Entities loadout, is separate. 
 
 **Cancel** can't stop a file halfway, so the current file finishes first, then the partial download is deleted. A download interrupted by a restart is marked failed.
 
-The connection's view has four tabs, like KoboldCPP's: **Models** (on this machine first, then what's available to download), **Get**, **Arriving** and **Settings**. A model's own view shows whether it is loaded, **Unload now**, its size on disk with **Remove** (not for the model its loadout holds), and its details. With room, the models show as a table.
+The connection's view has three tabs, like KoboldCPP's: **Models** (what is on this machine, with **Get more…** under the list, or in the empty list), **Arriving** and **Settings**. A model's own view shows whether it is loaded, **Unload now**, its size on disk with **Remove** (not for the model its loadout holds), and its details. With room, the models show as a table.
 
 ### The background remover
 
@@ -628,7 +768,7 @@ When the service's own list changes what a model is for, its answer stands even 
 
 A **sampling config** is a named set of generation settings: how adventurous or predictable a model's writing is, how long a reply may be, how much of the story it is sent. Each loadout names one, and a pipeline's settings can pick a different one for any of its model calls.
 
-Configs are edited in the **Sampling** view, on the rail. Its list groups every config by what it samples, **Large language models** or **Image generation**; a row says whether the config is built in, carries a star when a default loadout uses it (its tooltip names the loadouts, _In the Reply loadout_), and says how many settings it turns on and what uses it. **New** makes a config. Pick one and its editor opens beside the list: its name, its [parameters](#adjustable-parameters) with **Choose parameters**, and a **Used by** card naming the default loadouts that use it (each opens [that loadout](#the-loadout-editor) in Loadouts) and the pipelines that pick it (each opens in **Admin › Pipelines**). **Save** keeps your changes; **⋯** holds **Set as default…**, **Duplicate**, **Reset unsaved changes** and **Delete**, whose dialog says which jobs and pipelines lose it.
+Configs are edited in the **Sampling** view, on the rail. Its list groups every config by what it samples, **Large language models** or **Image generation**; a row says whether the config is built in, carries a star when a default loadout uses it (its tooltip names the loadouts, _In the Reply loadout_), and says how many settings it turns on and what uses it. **New** makes a config. Pick one and its editor opens beside the list: its name, its [parameters](#adjustable-parameters) with **Choose parameters**, and a **Used by** card naming the default loadouts that use it (each opens [that loadout](#the-loadout-editor) in Loadouts) and the pipelines that pick it (each opens in **Admin › Pipelines**). **Save** keeps your changes; **⋯** holds **Set as default…**, **Duplicate**, **Reset unsaved changes** and **Delete**, whose dialog says which jobs and pipelines lose it. A fresh install replies with the built-in **Reply** config: thinking off, up to 1024 tokens a reply.
 
 A config is chosen wherever it is used:
 
@@ -769,7 +909,7 @@ A model can override its connection's prompt format and token counter in its own
 A stop sequence is a piece of text that ends the reply the moment the model writes it. Each request gets one list, from three sources:
 
 - **Format**: the prompt format's own markers, such as ChatML's `<|im_end|>`.
-- **Speaker**: a `Name:` label for every character and persona in the scene except the one speaking, so the model stops before writing someone else's line.
+- **Speaker**: a `Name:` label for every character and persona in the scene except the one speaking, so the model stops before writing someone else's line. Voices with no card count too: once a session has a narration line, the narrator under its current name and every name a narration or unclaimed line was written under; the Lair's *Dungeon Master*; and a genre's envoys. A reply that opens with one of their labels has it taken off, except on that voice's own turn.
 - **Your own**: whatever you put in the sampling config's **Stop sequences**, one per line. `{{char}}` and `{{user}}` are filled in.
 
 Which of these are sent depends on how the connection sends the story:

@@ -69,13 +69,22 @@ export function pickNote(input: {
 }
 
 export const OWNER_OPTIONS = [
+	{ value: "player", label: "The player" },
 	{ value: "cast", label: "Each character" },
 	{ value: "world", label: "The world" },
 	{ value: "location", label: "Each place" }
 ] as const
 
+export const SCOPE_OPTIONS = [
+	{ value: "session", label: "For the session", hint: "Each session starts it fresh" },
+	{ value: "world", label: "Across sessions", hint: "Kept on the lorebook; every session that reads it sees it" }
+] as const
+
+export const scopeWords = (scope: string): string => (scope === "world" ? "Across sessions" : "For the session")
+
 export const CHANGER_OPTIONS = [
-	{ value: "rules", label: "The rules" },
+	// 🚧 hint (lane ed, plan §25): what "the rules" leaves out, so a person reads why a stat is not editable by hand.
+	{ value: "rules", label: "The rules", hint: "Not by hand — unless the session lets people edit everything by hand" },
 	{ value: "gm", label: "The game master" },
 	{ value: "holder", label: "The holder" },
 	{ value: "everyone", label: "Anyone" }
@@ -101,7 +110,7 @@ export const SHOWN_AS_OPTIONS = [
 	{ value: "ties", label: "A list of ties" }
 ] as const
 
-const OWNER_WORD: Record<string, string> = { cast: "each character", world: "the world", location: "each place" }
+const OWNER_WORD: Record<string, string> = { player: "the player", cast: "each character", world: "the world", location: "each place" }
 const CHANGER_WORD: Record<string, string> = { rules: "the rules", gm: "the game master", holder: "the holder", everyone: "anyone" }
 
 const sentenceCase = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s)

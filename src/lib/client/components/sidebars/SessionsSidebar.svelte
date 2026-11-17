@@ -10,10 +10,15 @@
 	import EditSessionForm from "../sessionForms/EditSessionForm.svelte"
 	import StartSessionForm from "../sessionForms/StartSessionForm.svelte"
 	import SessionViewPanel from "../sessionForms/SessionViewPanel.svelte"
+	import SeatMemberSheet from "../sessionForms/SeatMemberSheet.svelte"
+	import {
+		takeSeatMemberSheet,
+		type SeatMemberAsk
+	} from "../sessionForms/seatMemberSheet.svelte"
 	import * as Icons from "@lucide/svelte"
 	import { Dialog, Popover, Portal } from "@skeletonlabs/skeleton-svelte"
 	import { goto } from "$app/navigation"
-	import { toaster } from "$lib/client/utils/toaster"
+	import { notify } from "$lib/client/utils/notify"
 	import { notRecordedToast } from "$lib/client/lorebooks/notRecordedToast"
 	import { page } from "$app/state"
 	import SessionListItem from "../listItems/SessionListItem.svelte"
@@ -30,6 +35,7 @@
 	import PanelSplit from "../panels/PanelSplit.svelte"
 	import { ViewModeTracker } from "$lib/client/shell/viewMode.svelte"
 	import { JUMP_CONTEXT, type JumpCtx } from "$lib/client/shell/jump.svelte"
+	import { openSessionPage } from "$lib/client/shell/openJumpHit"
 	import {
 		groupSessions,
 		isAwaitingUser
@@ -41,6 +47,9 @@
 		patchedRow
 	} from "$lib/client/sessions/sessionRowPatches.svelte"
 	import type { StatusText } from "@serene-pub/sdk"
+	import { genreNamesFor } from "$lib/client/sessions/appletRows"
+	import { seatCardsAsShown } from "$lib/client/components/sessionPage/projections/characters"
+	import { sessionMatchesSearch } from "./sessionSearch"
 
 	interface Props {
 		onclose?: () => Promise<boolean> | undefined
@@ -77,7 +86,9 @@
 		$state(null)
 	let editSessionId: number | null = $state(null)
 	/** 🚧 The tab the edit form opens on, when its asker named one; reset on each open. */
-	let editSessionTab = $state<"participants" | "settings" | "visibility" | undefined>(undefined)
+	let editSessionTab = $state<
+		"participants" | "settings" | "visibility" | undefined
+	>(undefined)
 	/**
 	 * The start-a-session screen is open.
 	 *
@@ -88,6 +99,10 @@
 	let isStarting = $state(false)
 	/** What the start screen opens knowing, when a caller knew something. */
 	let startPrefill: PanelsCtx["digest"]["createSession"] = $state(undefined)
+	/** 🚧 M2c: the offered genres, for the Apps group and an applet's `open-sessions` filter. */
+	let offeredGenres: Sockets.Sessions.Genres.Response["genres"] = $state([])
+	/** 🚧 M2c: genre ids an applet asked the list to show; empty = no such filter. */
+	let appletGenreIds: string[] = $state([])
 	let viewingId: number | null = $state(null)
 	let returnToViewId: number | null = $state(null)
 	let sessionFormHasChanges = $state(false)
@@ -213,10 +228,7 @@
 
 	/** The dot's colour for a tag, or the neutral one an uncoloured tag gets. */
 	function tagDotPreset(colorPreset?: string): string {
-		return (
-			colorPreset ||
-			"bg-primary-500/20 text-primary-ink"
-		)
+		return colorPreset || "bg-primary-500/20 text-primary-ink"
 	}
 
 	/** A pick applies and closes the popout: one choice, one interaction. */
@@ -275,6 +287,9 @@
 		applyRowChanged(msg)
 	}
 	function handleRunStatus(msg: Sockets.Sessions.RunStatus.Response) {
+		// 🚧 A line-bound run (speaking a line) shows on its line only — and
+		// its end frame must not clear a reply's status here.
+		if (msg.lineBound) return
 		runStatuses.set(msg.sessionId, msg.status)
 	}
 	/** The row's status: the push's word where one arrived, else the list's. */
@@ -367,6 +382,7 @@
 		returnToViewId = null
 		viewingId = null
 		sessionFormHasChanges = false
+		seatSheet = null
 		isStarting = true
 	}
 
@@ -412,8 +428,8 @@
 						id: session.id!,
 						title: session.name || "Untitled session",
 						subtitle:
-							(session.sessionCharacters || [])
-								.map((sc) => sc.character?.name)
+							seatCardsAsShown(session)
+								.map((c) => c.name)
 								.filter(Boolean)
 								.join(", ") || undefined
 					})),
@@ -429,6 +445,7 @@
 		editSessionId = sessionId
 		editSessionTab = undefined
 		viewingId = null
+		seatSheet = null
 	}
 
 	/**
@@ -446,6 +463,7 @@
 		editSessionId = null
 		returnToViewId = null
 		sessionFormHasChanges = false
+		seatSheet = null
 		viewingId = sessionId
 	}
 
@@ -456,15 +474,9 @@
 		showEditSessionForm = true
 	}
 
+	/** Start and Open session go into the session the one way (`openSessionPage`). */
 	function handleOpenSession(sessionId: number) {
-		goto(`/sessions/${sessionId}`)
-		panelsCtx.fullPageView = null
-		if (panelsCtx.isMobileMenuOpen) {
-			panelsCtx.isMobileMenuOpen = false
-		}
-		if (panelsCtx.mobilePanel) {
-			panelsCtx.mobilePanel = null
-		}
+		void openSessionPage(panelsCtx, sessionId)
 	}
 
 	function handleViewLorebook(lorebookId: number) {
@@ -531,15 +543,19 @@
 
 	let showDeleteModal = $state(false)
 	let sessionToDelete: number | null = $state(null)
+	/** 🚧 M2c: the plugin whose applet asked for this confirm (null for the person's own ⋮ › Delete). */
+	let deleteFromApplet: string | null = null
 	let isDeleting = $state(false)
 
 	function handleDeleteClick(sessionId: number) {
 		sessionToDelete = sessionId
+		deleteFromApplet = null
 		showDeleteModal = true
 	}
 	function cancelDelete() {
 		showDeleteModal = false
 		sessionToDelete = null
+		deleteFromApplet = null
 	}
 	function confirmDelete() {
 		// Guard against double-submit (eg. an impatient re-click while the
@@ -552,9 +568,15 @@
 				panelsCtx.fullPageView = null
 			}
 			isDeleting = true
-			socket.emit("sessions:delete", { id: sessionToDelete })
+			socket.emit("sessions:delete", {
+				id: sessionToDelete,
+				...(deleteFromApplet
+					? { fromApplet: { pluginId: deleteFromApplet } }
+					: {})
+			})
 			showDeleteModal = false
 			sessionToDelete = null
+			deleteFromApplet = null
 		}
 	}
 	function handleSessionsDelete(msg: Sockets.Sessions.Delete.Response) {
@@ -564,7 +586,11 @@
 		if (viewingId === msg.id) viewingId = null
 		// What its last recording left off the timeline is said too (A18).
 		const done = notRecordedToast("Session deleted", msg.notRecorded)
-		toaster[done.kind]({ title: done.title, description: done.description })
+		notify[done.kind]({
+			source: "socket:sessions:delete",
+			title: done.title,
+			description: done.description
+		})
 	}
 	// Not shown to the user here - the generic onAny catch-all in Layout.svelte
 	// already toasts on "sessions:delete:error"; this listener just clears the
@@ -621,6 +647,11 @@
 
 		let filtered = [...patchedSessions]
 
+		if (appletFilterNames.length)
+			filtered = filtered.filter((session) =>
+				appletFilterNames.includes(session.genreName as string)
+			)
+
 		// If searching by character ID, filter sessions that include that character
 		if (searchByCharacterId) {
 			filtered = filtered.filter((session) =>
@@ -661,24 +692,9 @@
 			)
 		}
 
-		return filtered.filter((session) => {
-			const sessionName = session.name?.toLowerCase() || ""
-			const personaNames = (session.sessionPersonas || [])
-				.map((cp) => cp.persona?.name?.toLowerCase() || "")
-				.join(" ")
-			const characterNames = (session.sessionCharacters || [])
-				.map((cc) => cc.character?.name?.toLowerCase() || "")
-				.join(" ")
-			const tagNames = (session.sessionTags || [])
-				.map((ct: any) => ct.tag?.name?.toLowerCase() || "")
-				.join(" ")
-			return (
-				sessionName.includes(lower) ||
-				personaNames.includes(lower) ||
-				characterNames.includes(lower) ||
-				tagNames.includes(lower)
-			)
-		})
+		return filtered.filter((session) =>
+			sessionMatchesSearch(session, lower)
+		)
 	})
 
 	/**
@@ -689,6 +705,7 @@
 	let listIsNarrowed = $derived(
 		!!search ||
 			activeChip !== "all" ||
+			appletGenreIds.length > 0 ||
 			!!searchByCharacterId ||
 			!!searchByPersonaId
 	)
@@ -736,6 +753,7 @@
 
 	$effect(() => {
 		if (panelsCtx.digest.sessionId) {
+			seatSheet = null
 			showEditSessionForm = true
 			editSessionId = panelsCtx.digest.sessionId
 			// 🚧 The tab the asker named (the session header's Session settings).
@@ -745,6 +763,13 @@
 			delete panelsCtx.digest.sessionCharacterId
 			delete panelsCtx.digest.sessionPersonaId
 		}
+	})
+
+	/** 🚧 The seat member's read-only sheet the session page asked for, held until closed or until another screen takes the pane. */
+	let seatSheet = $state<SeatMemberAsk | null>(null)
+	$effect(() => {
+		const ask = takeSeatMemberSheet()
+		if (ask) seatSheet = ask
 	})
 
 	/**
@@ -770,6 +795,40 @@
 		}
 		startPrefill = prefill
 		openStartForm()
+	})
+
+	$effect(() =>
+		interest.requestWithInterest(
+			"sessions:genres",
+			{},
+			(msg: Sockets.Sessions.Genres.Response) => {
+				offeredGenres = msg.genres || []
+			}
+		)
+	)
+	const appletFilterNames = $derived(
+		genreNamesFor(appletGenreIds, offeredGenres)
+	)
+
+	/** 🚧 M2c: an applet's `open-sessions` — show only its genres until cleared. */
+	$effect(() => {
+		const ids = panelsCtx.digest.sessionsGenres
+		if (!ids) return
+		delete panelsCtx.digest.sessionsGenres
+		appletGenreIds = [...ids]
+	})
+
+	/** 🚧 M2c: an applet's `delete-session` — the existing confirm, for a session in the list. */
+	// Read once the list has landed, so a request that arrives with the view does not find it empty.
+	$effect(() => {
+		const id = panelsCtx.digest.deleteSessionId
+		if (id === undefined || isLoading) return
+		const from = panelsCtx.digest.deleteSessionFromApplet
+		delete panelsCtx.digest.deleteSessionId
+		delete panelsCtx.digest.deleteSessionFromApplet
+		if (!sessions.some((x) => x.id === id)) return
+		handleDeleteClick(id)
+		deleteFromApplet = from ?? null
 	})
 
 	$effect(() => {
@@ -924,7 +983,10 @@
 
 <!-- A narrowing in force, as one dismissible chip (§6.3). -->
 {#snippet narrowingChip(text: string, clearLabel: string, onClear: () => void)}
-	<Badge size="md" class="text-surface-700-300 flex min-w-0 items-center gap-1">
+	<Badge
+		size="md"
+		class="text-surface-700-300 flex min-w-0 items-center gap-1"
+	>
 		<span class="min-w-0 truncate">{text}</span>
 		<button
 			type="button"
@@ -944,19 +1006,29 @@
 	     column beside an empty pane; picking a row moves it to the left. -->
 	<PanelSplit
 		mode={vm.mode}
-		hasDetail={isStarting || isEditing || shownId != null}
+		hasDetail={seatSheet != null ||
+			isStarting ||
+			isEditing ||
+			shownId != null}
 		listFills
 		fillWidth={listMode.value === "cards" ? "reading" : "list"}
 		emptyMessage="Pick a session, or start one."
 		listWidth="380px"
 	>
 		{#snippet detail()}
-			{#if isStarting}
+			{#if seatSheet}
+				<SeatMemberSheet
+					sessionId={seatSheet.sessionId}
+					ref={seatSheet.ref}
+					onClose={() => (seatSheet = null)}
+				/>
+			{:else if isStarting}
 				<!-- Bound to the SAME dirty flag the edit form uses, so the
 				     view's close gate and its unsaved-changes modal cover a
 				     half-answered start screen without knowing there is one. -->
 				<StartSessionForm
 					prefill={startPrefill}
+					{sessions}
 					bind:hasChanges={sessionFormHasChanges}
 					onCreated={handleSessionCreated}
 					onCancel={closeStartForm}
@@ -1102,7 +1174,7 @@
 					>
 						<button
 							type="button"
-							class="rounded-full px-3 py-1 text-chip {activeChip ===
+							class="text-chip rounded-full px-3 py-1 {activeChip ===
 							'all'
 								? 'preset-pressed'
 								: 'preset-tonal-surface'}"
@@ -1113,7 +1185,7 @@
 						</button>
 						<button
 							type="button"
-							class="flex items-center gap-1.5 rounded-full px-3 py-1 text-chip {activeChip ===
+							class="text-chip flex items-center gap-1.5 rounded-full px-3 py-1 {activeChip ===
 							'waiting'
 								? 'preset-pressed'
 								: 'preset-tonal-surface'}"
@@ -1127,7 +1199,7 @@
 						</button>
 						<button
 							type="button"
-							class="flex items-center gap-1.5 rounded-full px-3 py-1 text-chip {activeChip ===
+							class="text-chip flex items-center gap-1.5 rounded-full px-3 py-1 {activeChip ===
 							'favorites'
 								? 'preset-pressed'
 								: 'preset-tonal-surface'}"
@@ -1145,6 +1217,13 @@
 							activeFilterLabel,
 							`Clear filter: ${activeFilterLabel}`,
 							() => pickFilter("all")
+						)}
+					{/if}
+					{#if appletFilterNames.length}
+						{@render narrowingChip(
+							`Showing ${appletFilterNames.join(", ")} · Clear`,
+							"Clear the genre filter",
+							() => (appletGenreIds = [])
 						)}
 					{/if}
 					{#if searchCharacter}

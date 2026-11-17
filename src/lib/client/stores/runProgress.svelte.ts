@@ -76,6 +76,10 @@ export const runProgress = {
 	 */
 	apply(event: RunProgress): void {
 		if (!event?.runId) return
+		// 🚧 A line-bound run (speaking a line, owner ruling 2026-10-29) is
+		// shown on its line only: never a card, never a receipt — and its
+		// end must not retire the receipt of what the card is about.
+		if (event.lineBound) return
 		if (event.done || event.error) {
 			const known = runs.get(event.runId)
 			const sessionId = event.sessionId ?? known?.sessionId
@@ -103,7 +107,20 @@ export const runProgress = {
 			})
 			return
 		}
-		runs.set(event.runId, { ...(runs.get(event.runId) ?? {}), ...event })
+		const prev: Partial<RunProgress> = runs.get(event.runId) ?? {}
+		const next = { ...prev, ...event }
+		// A message describes the stage it came with ("Loading the image
+		// model…"); a later stage that brings none has outgrown it. Seen
+		// 2026-11-08: a KoboldCPP render read "sampling · 0% · Loading the
+		// image model…" for its whole three minutes.
+		if (
+			event.message === undefined &&
+			event.stage &&
+			prev.stage &&
+			event.stage !== prev.stage
+		)
+			delete (next as { message?: string }).message
+		runs.set(event.runId, next)
 	},
 
 	/**
@@ -112,6 +129,7 @@ export const runProgress = {
 	 * the question still being asked; a new run in the same session answers it.
 	 */
 	started(event: RunProgress): void {
+		if (event?.lineBound) return
 		if (event?.sessionId != null) finished.delete(event.sessionId)
 		this.apply(event)
 	},

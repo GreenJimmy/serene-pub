@@ -101,13 +101,27 @@ It also names the `.env` files it read, and warns about any setting it doesn't e
 
 - **Turn accounts on** before anyone else can reach the pub (see [above](#first-turn-on-accounts)).
 - **Forms follow the same rule.** The recovery pages (the one place Serene Pub uses an HTML form) may be submitted from the address you opened them on, `http://localhost:3000` included, even when `PUBLIC_URL` names your public address. A form posted from another site is refused with *Cross-site POST form submissions are forbidden*.
-- **Allowed origins need no setting.** A browser may open a live connection from the same hostname it loaded the page from; programs that send no origin (scripts, the Android app's own view) are allowed only from your local network. `ALLOWED_ORIGINS` adds extra hostnames for the rare setup where the page and the connection use different ones.
+- **Allowed origins need no setting.** A browser may open a live connection from the same hostname it loaded the page from, from anywhere, over HTTPS. Programs that send no origin (scripts, the Android app's own view) are allowed only from your local network, and so is a browser reaching the pub over plain http from outside it. `ALLOWED_ORIGINS` adds extra hostnames for the rare setup where the page and the connection use different ones.
 - **Don't set `ALLOWED_ORIGINS=*`.** It switches the check off entirely, for browsers and other programs alike. With accounts off, anything that reaches the port gets an administrator. Serene Pub warns at startup when it's set.
 - **Narrow `TRUSTED_PROXIES`.** Set to `private`, it trusts every device on your local network to report a visitor's address, so any of them could dodge the sign-in rate limit. Name your proxy's own address instead.
 - **Keep `meta.json` with your database.** It sits in your [data folder](./environment-variables.md#data-and-storage) and holds the secret that sign-ins and stored passphrases depend on. Serene Pub's own backups keep a copy beside every database backup; if you back up by hand, copy it too. Restoring a database without it signs everyone out and makes every stored passphrase stop working.
 - **Backups leave out your pictures unless you ask.** By default a backup holds the database only. If the disk is lost and you restore one, characters and sessions come back but their avatars, sprites and media don't. Turn on **Include user files** in **Admin › Data and backups**, or copy the data folder's `users/` folder yourself. Each backup is also built in memory before it's written, so the server briefly needs about as much free memory as the compressed database takes on disk.
 - **Sign-ins last** `USER_TOKEN_EXPIRATION_HOURS` (7 days by default). The cookie can't be read by page scripts, is `Secure` over HTTPS, and **Logout** ends the session on the server at once.
 - **Content Security Policy** is on and strict. If your proxy or CDN injects its own scripts, the browser console shows a CSP error naming the blocked address. Most often it's Cloudflare's Browser Insights beacon (`static.cloudflareinsights.com`): turn that off in Cloudflare (Speed → Optimization → Browser Insights), or allow it with `CSP_EXTRA_SCRIPT_SRC`.
+
+## Plugin packages on a pub
+
+A plugin package is a zip that **Admin › Plugins** unpacks onto the pub's disk, under your [data folder](./environment-variables.md#data-and-storage) at `plugins/<id>/<version>/`. When you install a newer version, the previous one stays until the next start, then it is removed. Two settings bound a package (see [Environment variables](./environment-variables.md)): `SP_PLUGIN_PACKAGE_MAX_MB` (512 by default, counted as the files it unpacks to) and `SP_PLUGIN_FILES_MAX` (10000 files). A package over either is refused, and the message names the variable to raise. Admin › Plugins shows a package's name, size, the permissions it asks for and what it can't do before you press **Install**, and **Cancel** drops it. Each plugin also gets a place of its own to keep files, 64 MB unless its package asks for another size. It is on for every pub; before this preview it stayed off unless `SERENE_PUB_DATA_DIR` was set. [Plugins](./plugins.md) covers what the plugin can do with it.
+
+### Install a package from disk
+
+A browser uploads a package of any size up to `SP_PLUGIN_PACKAGE_MAX_MB`. Where there's no browser to hand, such as a machine you reach only by a terminal, install it from a folder on the machine that runs the pub. Stop Serene Pub first (the command needs the database to itself), then run this from the app's folder:
+
+```bash
+npm run plugin:install -- <folder>
+```
+
+`<folder>` is the built package's root, the folder that holds `dist/plugin/manifest.json`. It is installed switched off, as an upload is; add `--enable` after the folder to switch it on too. Start Serene Pub again afterwards.
 
 ## Troubleshooting
 

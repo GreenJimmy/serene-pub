@@ -24,7 +24,7 @@
 	import { flip } from "svelte/animate"
 	import { useTypedSocket } from "$lib/client/sockets/typedSocket"
 	import { useInterest } from "$lib/client/sockets/interest.svelte"
-	import { toaster } from "$lib/client/utils/toaster"
+	import { notify } from "$lib/client/utils/notify"
 	import Select from "$lib/client/components/inputs/Select.svelte"
 	import RowMenu from "$lib/client/components/menus/RowMenu.svelte"
 	import EntityGalleryViewModal from "$lib/client/components/gallery/EntityGalleryViewModal.svelte"
@@ -255,7 +255,8 @@
 	}
 	const onRegen = (res: Sockets.Media.RegenerateThumbnail.Response) => {
 		busyId = null
-		toaster.success({
+		notify.success({
+			source: "socket:media:regenerateThumbnail",
 			title: res.regenerated
 				? "Thumbnail regenerated"
 				: "Already at full size — the original is served"
@@ -265,13 +266,15 @@
 		// Re-listed rather than patched in place: the thumbnail row is gone
 		// and `storedBytes` with it, and `refresh()` keeps whatever sort and
 		// filter this panel is showing.
-		toaster.success({
+		notify.success({
+			source: "socket:media:setFrame",
 			title: res.media.frame ? "Crop saved" : "Crop reset"
 		})
 		refresh()
 	}
 	const onDelete = (res: Sockets.Media.Delete.Response) =>
-		toaster.success({
+		notify.success({
+			source: "socket:media:delete",
 			title: "Image deleted",
 			// The server's own count, not the one the dialog showed — it
 			// re-counts, so this is what actually happened.
@@ -285,7 +288,8 @@
 	}
 	const onCullDerived = (res: Sockets.Media.CullDerived.Response) => {
 		cleanupBusy = false
-		toaster.success({
+		notify.success({
+			source: "socket:media:cullDerived",
 			title: res.variants
 				? `Freed ${formatBytes(res.bytes)} across ${res.variants} ${res.variants === 1 ? "copy" : "copies"}`
 				: "Nothing to remove"
@@ -294,7 +298,8 @@
 	}
 	const onCullOriginals = (res: Sockets.Media.CullOriginals.Response) => {
 		cleanupBusy = false
-		toaster.success({
+		notify.success({
+			source: "socket:media:cullOriginals",
 			title: res.files
 				? `Freed ${formatBytes(res.freedBytes)} from ${res.files} ${res.files === 1 ? "file" : "files"}`
 				: "No originals could be removed safely",
@@ -313,7 +318,8 @@
 				...cleanup,
 				derivedCacheEnabled: res.derivedCacheEnabled
 			}
-		toaster.success({
+		notify.success({
+			source: "socket:media:setCachePolicy",
 			title: res.derivedCacheEnabled
 				? "Derived forms will be kept on disk"
 				: "Derived forms will be re-made on every request"
@@ -321,7 +327,10 @@
 	}
 	const onError = (e: any) => {
 		cleanupBusy = false
-		toaster.error({ title: e?.error ?? "Something went wrong" })
+		notify.error({
+			source: "media:error",
+			title: e?.error ?? "Something went wrong"
+		})
 	}
 
 	/**
@@ -794,18 +803,16 @@
 					<div
 						class="bg-surface-100-900/90 absolute right-0 bottom-0 left-0 px-1.5 py-1"
 					>
-						<p class="truncate text-meta font-medium">
+						<p class="text-meta truncate font-medium">
 							{displayName(item)}
 						</p>
-						<p class="text-surface-600-400 truncate text-meta">
+						<p class="text-surface-600-400 text-meta truncate">
 							{formatBytes(item.bytes)} · {shortDate(
 								item.createdAt
 							)}
 						</p>
 						{#if item.attachedTo}
-							<p
-								class="text-surface-600-400 truncate text-meta"
-							>
+							<p class="text-surface-600-400 text-meta truncate">
 								{item.orphaned
 									? "orphaned"
 									: item.attachedTo.name}
@@ -820,7 +827,7 @@
 			{#each filtered as item (item.id)}
 				<div
 					role="listitem"
-					class="border-surface-200-800 flex items-center gap-2 rounded-lg border p-1.5"
+					class="bg-surface-100-900 flex items-center gap-2 rounded-lg p-1.5"
 					animate:flip={{ duration: motionDuration(MOTION.base) }}
 					out:fade={{ duration: motionDuration(MOTION.fast) }}
 				>
@@ -925,10 +932,7 @@
 			{/if}
 		</button>
 		{#if cleanupOpen}
-			<div
-				id="media-cleanup"
-				class="border-surface-200-800 flex flex-col gap-4 border-t p-3"
-			>
+			<div id="media-cleanup" class="flex flex-col gap-4 p-3">
 				{#if !cleanup}
 					<div class="flex justify-center py-4">
 						<Icons.Loader2
@@ -941,7 +945,9 @@
 						<p class="text-surface-600-400 text-xs">
 							Thumbnails and other copies made from what is kept;
 							removing them frees space now and costs one
-							re-encode the next time each image is shown.
+							re-encode the next time each image is shown. This
+							includes spoken audio, which is spoken again when
+							asked.
 						</p>
 						<p class="text-sm">
 							{cleanup.derived.variants}

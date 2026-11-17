@@ -42,8 +42,12 @@ import { getAppDataDir } from "$lib/server/utils/appDataDir"
 import {
 	catalogView,
 	recommendedEmbeddingModels,
-	recommendedNerModels
+	recommendedEmbeddingSnapshot,
+	recommendedNerModels,
+	recommendedNerSnapshot
 } from "./onnxList"
+import type { EmbeddingModelDef } from "$lib/server/embedding/models"
+import type { NerModelDef } from "$lib/server/ner/models"
 import type { OnnxCatalogView, OnnxModality } from "./onnxList"
 
 export type { OnnxCatalogView, OnnxModality }
@@ -116,7 +120,35 @@ interface DirScan {
 	 * "on disk" is the one answer a person cannot act on.
 	 */
 	weights: boolean
+	/** Basenames of every `.onnx` file found. */
+	onnxFiles: string[]
 	bytes: number
+}
+
+/**
+ * The file-name suffix transformers.js gives each precision's weights:
+ * `model.onnx` (fp32), `model_fp16.onnx`, `model_quantized.onnx` (q8),
+ * `model_q4.onnx`. Other suffixes exist (int8, uint8, q4f16, bnb4); a file
+ * carrying one is never fp32.
+ */
+const DTYPE_SUFFIX: Record<string, string> = {
+	fp16: "_fp16",
+	q8: "_quantized",
+	q4: "_q4"
+}
+const OTHER_SUFFIXES = ["_int8", "_uint8", "_q4f16", "_bnb4"]
+
+/** Does this `.onnx` file name hold the weights of this precision? */
+export function onnxFileMatchesDtype(file: string, dtype: string): boolean {
+	const stem = file.replace(/\.onnx$/i, "").toLowerCase()
+	const own = DTYPE_SUFFIX[dtype]
+	if (own) return stem.endsWith(own)
+	if (dtype === "fp32")
+		return ![...Object.values(DTYPE_SUFFIX), ...OTHER_SUFFIXES].some((s) =>
+			stem.endsWith(s)
+		)
+	// A precision this file does not know the naming of: any weights count.
+	return true
 }
 
 const scans = new Map<string, DirScan>()
@@ -124,7 +156,12 @@ const scanKey = (modelId: string, modality: OnnxCacheLane) =>
 	`${modality}:${modelId}`
 
 async function walk(dir: string, depth = 0): Promise<DirScan> {
-	const out: DirScan = { present: false, weights: false, bytes: 0 }
+	const out: DirScan = {
+		present: false,
+		weights: false,
+		onnxFiles: [],
+		bytes: 0
+	}
 	// A repo is `config.json`, a tokenizer and an `onnx/` folder. Anything
 	// deeper than a handful of levels is not a transformers cache entry, and an
 	// unbounded walk over a directory somebody pointed TRANSFORMERS_CACHE at is
@@ -142,6 +179,7 @@ async function walk(dir: string, depth = 0): Promise<DirScan> {
 			const nested = await walk(full, depth + 1)
 			out.present ||= nested.present
 			out.weights ||= nested.weights
+			out.onnxFiles.push(...nested.onnxFiles)
 			out.bytes += nested.bytes
 			continue
 		}
@@ -149,7 +187,10 @@ async function walk(dir: string, depth = 0): Promise<DirScan> {
 		// A `.tmp.<pid>.<rand>` file is a write in flight, not a cached file.
 		if (entry.name.includes(".tmp.")) continue
 		out.present = true
-		if (entry.name.toLowerCase().endsWith(".onnx")) out.weights = true
+		if (entry.name.toLowerCase().endsWith(".onnx")) {
+			out.weights = true
+			out.onnxFiles.push(entry.name)
+		}
 		try {
 			out.bytes += (await fs.stat(full)).size
 		} catch {
@@ -160,14 +201,17 @@ async function walk(dir: string, depth = 0): Promise<DirScan> {
 	return out
 }
 
-async function scan(modelId: string, modality: OnnxCacheLane): Promise<DirScan> {
+async function scan(
+	modelId: string,
+	modality: OnnxCacheLane
+): Promise<DirScan> {
 	const key = scanKey(modelId, modality)
 	const cached = scans.get(key)
 	if (cached) return cached
 	const dir = modelDirFor(modelId, modality)
 	const result = dir
 		? await walk(dir)
-		: { present: false, weights: false, bytes: 0 }
+		: { present: false, weights: false, onnxFiles: [], bytes: 0 }
 	scans.set(key, result)
 	return result
 }
@@ -197,9 +241,17 @@ export function clearCachedScans() {
  */
 export async function isCached(
 	modelId: string,
-	modality: OnnxCacheLane
+	modality: OnnxCacheLane,
+	/**
+	 * The precision whose weights must be there. Files differ per dtype, so
+	 * `model.onnx` on disk does not make a `q4` model downloaded. Absent = any
+	 * `.onnx` file.
+	 */
+	dtype?: string | null
 ): Promise<boolean> {
-	return (await scan(modelId, modality)).weights
+	const s = await scan(modelId, modality)
+	if (!dtype) return s.weights
+	return s.onnxFiles.some((f) => onnxFileMatchesDtype(f, dtype))
 }
 
 /** Bytes this model occupies, or 0 when nothing of it is there. */
@@ -339,6 +391,8 @@ export interface RegistryFact {
 	status: string
 	errorMessage: string | null
 	sizeBytes: number | null
+	/** The precision the download fetched (`local_models.quantization`). */
+	quantization?: string | null
 }
 
 /** The catalogue a user-added row carries on its own `connection_models` row. */
@@ -366,6 +420,72 @@ export async function catalogMapFor(
 		modality === "embeddings"
 			? await recommendedEmbeddingModels()
 			: await recommendedNerModels()
+	return new Map(defs.map((d) => [d.id, catalogView(d)]))
+}
+
+/**
+ * Did somebody ask for a local ONNX model? True when a complete `onnx`
+ * `local_models` row exists for embeddings or named entities (a model is on
+ * disk), or a loadout names one of the two local ONNX connections.
+ *
+ * The ONE gate, read by the boot warm of the recommended lists
+ * (`warmRecommendedList`) and by the `connections:list` projection
+ * (`localModelStates`). The two connections always exist, so their existence
+ * does not say anyone asked; a network call nobody asked for breaks P1.
+ */
+export async function localOnnxAskedFor(db: Db): Promise<boolean> {
+	const schema = await import("$lib/server/db/schema")
+	const { and, eq, inArray } = await import("drizzle-orm")
+	const [onDisk] = await db
+		.select({ id: schema.localModels.id })
+		.from(schema.localModels)
+		.where(
+			and(
+				eq(schema.localModels.format, "onnx"),
+				inArray(schema.localModels.modality, ["embeddings", "ner"]),
+				eq(schema.localModels.status, "complete")
+			)
+		)
+		.limit(1)
+	if (onDisk) return true
+	const [named] = await db
+		.select({ id: schema.loadouts.id })
+		.from(schema.loadouts)
+		.innerJoin(
+			schema.connections,
+			eq(schema.loadouts.connectionId, schema.connections.id)
+		)
+		.where(
+			inArray(schema.connections.type, [
+				CONNECTION_TYPE.LOCAL_ONNX_EMBEDDINGS,
+				CONNECTION_TYPE.LOCAL_ONNX_NER
+			])
+		)
+		.limit(1)
+	return Boolean(named)
+}
+
+/**
+ * The catalogue with no network: the process snapshot when the list has been
+ * loaded, else the built-in one. For the list projection when nobody asked for
+ * a local ONNX model (owner ★C-5, 2026-11-04) — opening Connections must not
+ * be what reaches GitHub.
+ */
+async function catalogSnapshotMapFor(
+	modality: OnnxModality
+): Promise<Map<string, OnnxCatalogView>> {
+	const snap =
+		modality === "embeddings"
+			? recommendedEmbeddingSnapshot()
+			: recommendedNerSnapshot()
+	let defs: ReadonlyArray<EmbeddingModelDef | NerModelDef> = snap
+	if (defs.length === 0) {
+		defs =
+			modality === "embeddings"
+				? (await import("$lib/server/embedding/models"))
+						.EMBEDDING_MODELS
+				: (await import("$lib/server/ner/models")).NER_MODELS
+	}
 	return new Map(defs.map((d) => [d.id, catalogView(d)]))
 }
 
@@ -402,7 +522,8 @@ export async function registryMapFor(
 				modelName: schema.localModels.modelName,
 				status: schema.localModels.status,
 				errorMessage: schema.localModels.errorMessage,
-				sizeBytes: schema.localModels.sizeBytes
+				sizeBytes: schema.localModels.sizeBytes,
+				quantization: schema.localModels.quantization
 			})
 			.from(schema.localModels)
 			.where(
@@ -415,7 +536,8 @@ export async function registryMapFor(
 			const fact: RegistryFact = {
 				status: r.status,
 				errorMessage: r.errorMessage ?? null,
-				sizeBytes: r.sizeBytes ?? null
+				sizeBytes: r.sizeBytes ?? null,
+				quantization: r.quantization ?? null
 			}
 			// Filed under the Hub id on either column, the way the two
 			// lanes' registry readers (`registeredEmbeddingModel`,
@@ -506,7 +628,10 @@ export async function localModelState(
 		}
 	}
 
-	if (await isCached(modelId, modality)) {
+	// The RIGHT file: the precision the download recorded. No record (files
+	// placed by hand) = any weights count.
+	const expectedDtype = registry?.quantization ?? null
+	if (await isCached(modelId, modality, expectedDtype)) {
 		return {
 			...base,
 			state: "on_disk",
@@ -538,7 +663,9 @@ export async function localModelStates(
 	const modality = onnxModalityOf(endpoint.type)
 	if (!modality || rows.length === 0) return out
 	const [catalog, registry, loadedModelId] = await Promise.all([
-		catalogMapFor(modality),
+		(await localOnnxAskedFor(db))
+			? catalogMapFor(modality)
+			: catalogSnapshotMapFor(modality),
 		registryMapFor(db, modality),
 		laneLoadedModelId(modality)
 	])

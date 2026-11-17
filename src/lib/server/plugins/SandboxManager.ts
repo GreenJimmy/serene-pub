@@ -23,13 +23,23 @@
  * backstop in `dispatch`.
  */
 
+import {
+	USER_ANNEX_CLOSED,
+	USER_STORAGE_CLOSED,
+	frameOpenFor,
+	type FrameCause
+} from "$lib/server/sockets/appletCause"
 import path from "node:path"
 import { QuickJsSandbox } from "./QuickJsSandbox"
 import { SesWorkerSandbox } from "./SesWorkerSandbox"
 import { HookGracePolicy, type RunStop } from "./hookGrace"
-import { type PermissionConfig } from "./storageHost"
+import { packageAssetsFor, type SandboxConfig } from "./packageHost"
 import type { HookRunResult, PluginSandbox, SandboxKind } from "./types"
 import { hookCtxGrants, type HookCtxKind } from "./hookCtx"
+import { USER_ANNEX_LIMITS } from "@serene-pub/sdk"
+import { insideTransaction } from "$lib/server/db/transactionGuard"
+import { commitUserAnnexWrites, loadUserAnnexSnapshot } from "./userAnnex"
+import type { UserAnnexJob } from "./types"
 
 /** What the manager needs to know about an installed, enabled plugin. Persisted
  * elsewhere; the manager holds the projection it dispatches against. */
@@ -52,6 +62,29 @@ export interface PluginDescriptor {
 	 * sandbox at load; the plugin never sees the path.
 	 */
 	storageQuotaBytes?: number
+	/**
+	 * 🚧 (M2b) Each person's own storage quota in bytes (`storage-per-user`),
+	 * from `perUserStorageGrant`. Absent = per-user storage denied. A person's
+	 * folder is `<dataDir>/extensions_user_data/<id>/<userId>`
+	 * (`userStorageDir`), opened only for a call whose host-side `user` is a
+	 * positive integer.
+	 */
+	userStorageQuotaBytes?: number
+	/**
+	 * 🚧 (M2b) Whether the plugin holds `applet:annex:user` (declared, reviewed,
+	 * not denied), from `appletGrant(...).userAnnex`. False/absent: the methods
+	 * of `ctx.annex('user')` reject ("this extension was not granted the user annex").
+	 */
+	userAnnexGranted?: boolean
+	/**
+	 * The package's own files (`ctx.package`, M2a): the installed version and
+	 * the manifest's declared assets folder. Present only when the manifest
+	 * declares `assets: { dir }` with a safe dir (`safeAssetsDir`); absent, a
+	 * `ctx.package.read` answers that the plugin ships no assets. The manager
+	 * resolves it against its data dir; the plugin never sees the path. A
+	 * version change reloads the sandbox, like any grant change.
+	 */
+	packageAssets?: { version: string; dir: string }
 	/** The mediated-network grant: allowed fetch hosts. Absent = network denied. */
 	networkHosts?: string[]
 	/**
@@ -110,6 +143,14 @@ export interface CallOptions {
 	 * (`PluginDescriptor.settingsByUser`).
 	 */
 	user?: string
+	/**
+	 * 🚧 The applet whose mounted frame caused this call (`appletCause.ts`).
+	 * Beside `user`, and what the applet-group members derive from:
+	 * `ctx.annex('user')` and `ctx.storage.user` work only while it names the
+	 * plugin being called. Absent — an event or lifecycle hook, the schedule
+	 * tick, a routine run, an ordinary session-page send — they reject.
+	 */
+	frameCause?: FrameCause
 	/** The pipeline run this hook fired within, if any — the log's soft link. */
 	runId?: string
 	/**
@@ -176,6 +217,27 @@ export interface InvocationRecord {
  */
 export function storageSegment(id: string): string {
 	return id.replace(/[^a-zA-Z0-9_.-]/g, "_").replace(/^\.+/, "_") || "_"
+}
+
+/** The root of every plugin's per-person files: `<dataDir>/extensions_user_data`. */
+export function userDataRoot(dataDir: string): string {
+	return path.join(dataDir, "extensions_user_data")
+}
+
+/**
+ * 🚧 (M2b) One person's folder for one plugin, or undefined unless `userId` is a
+ * positive integer (as a number or its decimal text) — the only spelling that
+ * opens a folder, so nothing a hook or a request names can reach another path.
+ */
+export function userStorageDir(
+	dataDir: string,
+	pluginId: string,
+	userId: string | number | undefined | null
+): string | undefined {
+	const text = typeof userId === "number" ? String(userId) : userId
+	if (typeof text !== "string" || !/^[1-9][0-9]{0,15}$/.test(text))
+		return undefined
+	return path.join(userDataRoot(dataDir), storageSegment(pluginId), text)
 }
 
 /**
@@ -269,24 +331,39 @@ export class SandboxManager {
 	private readonly onInvocation?: (rec: InvocationRecord) => void
 	/** Root under which each plugin's `extensions_data/<id>` dir lives. */
 	private readonly dataDir?: string
+	/** 🚧 (M2b) The database handle for `ctx.annex('user')`: read before a call, written after an OK one. */
+	private readonly annexDb?: () => Db | null
 	constructor(
 		opts: {
 			onInvocation?: (rec: InvocationRecord) => void
 			dataDir?: string
+			/** The handle the user annex loads and commits through; absent, `ctx.annex('user')` is unavailable. */
+			annexDb?: () => Db | null
 		} = {}
 	) {
 		this.onInvocation = opts.onInvocation
+		this.annexDb = opts.annexDb
 		this.dataDir = opts.dataDir ?? process.env.SERENE_PUB_DATA_DIR
 	}
 
 	/** The permission grants for a plugin, or undefined when it has none. */
 	private permissionConfig(
 		desc: PluginDescriptor
-	): PermissionConfig | undefined {
+	): SandboxConfig | undefined {
 		const hasStorage = !!desc.storageQuotaBytes && !!this.dataDir
 		const hasNetwork = !!desc.networkHosts && desc.networkHosts.length > 0
-		if (!hasStorage && !hasNetwork) return undefined
-		const config: PermissionConfig = {}
+		const hasPackage = !!desc.packageAssets && !!this.dataDir
+		const hasUserStorage = !!desc.userStorageQuotaBytes && !!this.dataDir
+		if (!hasStorage && !hasNetwork && !hasPackage && !hasUserStorage)
+			return undefined
+		const config: SandboxConfig = {}
+		if (hasPackage)
+			config.packageAssets = packageAssetsFor(
+				this.dataDir!,
+				desc.id,
+				desc.packageAssets!.version,
+				desc.packageAssets!.dir
+			)
 		if (hasStorage) {
 			// The id becomes one path segment under extensions_data; assert the
 			// result stays under the root so a plugin id can never move its own
@@ -301,6 +378,7 @@ export class SandboxManager {
 			config.storageDir = dir
 			config.quotaBytes = desc.storageQuotaBytes
 		}
+		if (hasUserStorage) config.userQuotaBytes = desc.userStorageQuotaBytes
 		if (hasNetwork) config.networkHosts = desc.networkHosts
 		return config
 	}
@@ -598,7 +676,9 @@ export class SandboxManager {
 			desc.bundleHash,
 			desc.backend,
 			this.dataDir ? desc.storageQuotaBytes || 0 : 0,
-			desc.networkHosts ?? []
+			this.dataDir ? desc.userStorageQuotaBytes || 0 : 0,
+			desc.networkHosts ?? [],
+			this.dataDir && desc.packageAssets ? desc.packageAssets : null
 		])
 	}
 
@@ -858,8 +938,17 @@ export class SandboxManager {
 		const callSettings = own ? own.settings : desc.settings
 		const callSecrets = own ? own.secrets : desc.secrets
 
+		// ctx.annex('user') (M2b): the acting person's documents, loaded before the
+		// call; its buffered writes are committed after an OK one (below).
+		let annexUser: number | undefined
+		let annexJob: UserAnnexJob | undefined
 		let result: HookRunResult
 		try {
+			if (hookCtxGrants(opts.kind).annex) {
+				const annex = await this.annexJobFor(desc, opts.user, opts.frameCause)
+				annexJob = annex.job
+				annexUser = annex.userId
+			}
 			const invoked = sandbox.invoke(
 				{ pluginId: desc.id, hookName },
 				{
@@ -876,6 +965,21 @@ export class SandboxManager {
 						opts.seedLabel ?? `${desc.id}:${hookName}:${callId}`,
 					nowMs: opts.nowMs ?? startedAt,
 					maxOutputBytes: opts.maxOutputBytes,
+					// The acting person's own folder (M2b): from the call's
+					// host-side `user` and the grant — never from the input.
+					// Only while the plugin's own frame is open (`frameCause`);
+					// otherwise the sandbox rejects with the one closed sentence.
+					userStorageDir:
+						this.dataDir &&
+						desc.userStorageQuotaBytes &&
+						frameOpenFor(opts.frameCause, desc.id)
+							? userStorageDir(this.dataDir, desc.id, opts.user)
+							: undefined,
+					userStorageDenied:
+						desc.userStorageQuotaBytes && !frameOpenFor(opts.frameCause, desc.id)
+							? USER_STORAGE_CLOSED
+							: undefined,
+					userAnnexJob: annexJob,
 					// For the fetch bridge alone, host-side (R63): everything
 					// for the plugin's own work, only what it lends when its
 					// node runs in another package's pipeline.
@@ -924,6 +1028,28 @@ export class SandboxManager {
 			this.grace.settled(callId)
 		}
 
+		// The call's annex writes (M2b), saved only now that it returned OK — all
+		// or nothing. A failed, killed or thrown call carries none. A save that is
+		// refused (the person's data changed since the snapshot, or a cap or the
+		// declaration said no) turns the call into a failure: nothing was saved.
+		if (result.ok) {
+			const writes = result.userAnnexWrites
+			if (writes?.length) {
+				const { userAnnexWrites: _drop, ...rest } = result
+				result = rest
+				const why = await this.commitAnnex(desc.id, annexUser, writes)
+				if (why)
+					result = {
+						ok: false,
+						reason: why,
+						logs: result.logs,
+						durationMs: Date.now() - startedAt,
+						backend,
+						outcome: "error"
+					}
+			}
+		}
+
 		// No secret leaves the manager (R63): whatever the hook returned, threw or
 		// logged — a response that echoed a key, a bug that printed one — has
 		// every one of this plugin's secret values (and every handle) replaced
@@ -948,6 +1074,78 @@ export class SandboxManager {
 			queuedAt,
 			startedAt
 		)
+	}
+
+	/**
+	 * 🚧 (M2b) What `ctx.annex('user')` starts from for this call: the person's
+	 * documents under this plugin when the plugin holds the grant, a person is
+	 * acting and a database handle is available; otherwise the sentence its
+	 * methods reject with. Throws only when the load itself fails (the call then
+	 * fails with that reason, nothing having run).
+	 */
+	private async annexJobFor(
+		desc: PluginDescriptor,
+		user: string | undefined,
+		frameCause: FrameCause | undefined
+	): Promise<{ job: UserAnnexJob; userId?: number }> {
+		if (!desc.userAnnexGranted)
+			return {
+				job: {
+					denied: "annex('user'): this extension was not granted the user annex"
+				}
+			}
+		// The applet-group reach: only a call the plugin's own open frame caused.
+		if (!frameOpenFor(frameCause, desc.id))
+			return { job: { denied: `annex('user'): ${USER_ANNEX_CLOSED}` } }
+		const userId =
+			typeof user === "string" && /^[1-9][0-9]{0,15}$/.test(user)
+				? Number(user)
+				: undefined
+		if (userId === undefined)
+			return {
+				job: { denied: "annex('user'): no person is acting for this call" }
+			}
+		const db = this.annexDb?.() ?? null
+		if (!db)
+			return {
+				job: { denied: "annex('user'): saved data is not available right now" }
+			}
+		// A hook can run inside a transaction; the outer handle would wait on its
+		// mutex forever. Decline in words instead.
+		if (insideTransaction())
+			return {
+				job: {
+					denied:
+						"annex('user'): saved data is not available while a database transaction is open"
+				}
+			}
+		return {
+			job: {
+				snapshot: await loadUserAnnexSnapshot(db, userId, desc.id),
+				limits: { ...USER_ANNEX_LIMITS }
+			},
+			userId
+		}
+	}
+
+	/** Commit a call's buffered annex writes; a plain-words reason when they were not saved, null when they were. */
+	private async commitAnnex(
+		pluginId: string,
+		userId: number | undefined,
+		writes: { key: string; doc: unknown | null; base: number }[]
+	): Promise<string | null> {
+		const db = this.annexDb?.() ?? null
+		if (userId === undefined || !db)
+			return "The call changed saved data, but saving is not available right now; nothing of it was saved."
+		try {
+			const res = await commitUserAnnexWrites(db, userId, pluginId, writes)
+			if (res.ok) return null
+			if ("stale" in res)
+				return "The person's saved data changed while this call ran, so nothing of it was saved."
+			return `The call's saved data was refused, so nothing of it was saved: ${res.refused}`
+		} catch (e) {
+			return `The call's saved data could not be saved, so nothing of it was saved: ${String((e as Error)?.message || e)}`
+		}
 	}
 
 	private record(

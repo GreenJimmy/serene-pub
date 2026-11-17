@@ -70,6 +70,13 @@ import { visionProjectorOf } from "$lib/shared/connections/hostCapabilities"
 import { withStarConsequences } from "$lib/server/connections/starConsequences"
 import { starRefusal } from "$lib/server/connections/starRefusal"
 import {
+	OPENROUTER_KEY_FACTS_KEY,
+	freeModelsFirst,
+	isFreeModel,
+	openRouterKeyFactsOf,
+	recordOpenRouterKey
+} from "$lib/server/connections/openRouterKey"
+import {
 	configValuesNamingModel,
 	type ConfigValueNamingModel
 } from "$lib/server/connections/configValuesNamingModel"
@@ -80,6 +87,7 @@ import {
 	onnxModalityOf
 } from "$lib/server/localModels/onnxCache"
 import { localOnnxRefusal } from "$lib/server/localModels/onnxRuntime"
+import { LOCAL_ONNX_CONNECTION_NAME } from "$lib/server/connections/localOnnxConnections"
 import {
 	allConnectionModels as listAllConnectionModels,
 	connectionModelById,
@@ -93,6 +101,7 @@ import { redactConnections } from "$lib/server/connections/visibility"
 import { isGatedEvent } from "$lib/shared/sockets/interest"
 import { socketWants } from "./interest"
 import { readStoredFacts } from "$lib/shared/connections/modelFacts"
+import { readSpeechFacts } from "$lib/shared/connectionAdapters/speechFacts"
 import { defaultLoadoutName } from "$lib/shared/loadouts/defaultLoadoutName"
 import { hostKey, sameHost } from "$lib/shared/connections/hostKey"
 import { discoverLocalProviders } from "$lib/server/connections/discoverLocal"
@@ -230,13 +239,26 @@ function ollamaHostTakenError(
 
 async function connectionNameTaken(
 	name: string,
-	exceptId?: number
+	exceptId?: number,
+	type?: string
 ): Promise<boolean> {
 	const want = name.trim().toLowerCase()
 	if (!want) return false
 	const rows = await db
 		.select({ id: schema.connections.id, name: schema.connections.name })
 		.from(schema.connections)
+	// The two fixed local ONNX names belong to those two types alone — for a
+	// NEW claim. A row of another type that already bore the name before
+	// 2026-11-04 keeps saving under it (its name is unchanged, not taken).
+	const own =
+		exceptId !== undefined ? rows.find((r) => r.id === exceptId) : undefined
+	const unchanged = (own?.name ?? "").trim().toLowerCase() === want
+	if (!unchanged)
+		for (const [ownerType, fixed] of Object.entries(
+			LOCAL_ONNX_CONNECTION_NAME
+		)) {
+			if (fixed.toLowerCase() === want && type !== ownerType) return true
+		}
 	return rows.some(
 		(r) => r.id !== exceptId && (r.name ?? "").trim().toLowerCase() === want
 	)
@@ -317,7 +339,10 @@ export async function buildConnectionsList(): Promise<Sockets.Connections.List.R
 				// by `tokenCrypto`, and is what this projection exists to keep
 				// off the wire.
 				hasCredential: hasStoredCredential(c),
-				models: models.map((m) => modelRowView(c, m, local.get(m.id))),
+				models: freeFirstWhenNoCredit(
+					c,
+					models.map((m) => modelRowView(c, m, local.get(m.id)))
+				),
 				modelsSync: modelsSyncView(c)
 			}
 		})
@@ -501,13 +526,31 @@ export const connectionsCreate: Handler<
 		// is not a name: two connections from one preset would otherwise read
 		// the same in every picker. Refused here rather than only in the
 		// sidebar, because the wizard and the document-view page create too.
-		const desiredName = String((data as any).name ?? "").trim()
+		const createType = String((data as any).type ?? "")
+		let desiredName = String((data as any).name ?? "").trim()
+		const onnxName = LOCAL_ONNX_CONNECTION_NAME[createType]
+		if (onnxName) {
+			// Serene Pub keeps one row per local ONNX type, under a fixed name.
+			const existing = await db.query.connections.findFirst({
+				where: (c, { eq }) => eq(c.type, createType),
+				columns: { name: true }
+			})
+			if (existing) {
+				const error = `Serene Pub already has "${existing.name}". Download models into it instead.`
+				emitToUser("connections:create:error", { error })
+				throw new Error(error)
+			}
+			desiredName = onnxName
+		}
 		if (!desiredName) {
 			const error = "Connection name is required."
 			emitToUser("connections:create:error", { error })
 			throw new Error(error)
 		}
-		if (await connectionNameTaken(desiredName)) {
+		if (
+			!onnxName &&
+			(await connectionNameTaken(desiredName, undefined, createType))
+		) {
 			const error = `A connection named "${desiredName}" already exists.`
 			emitToUser("connections:create:error", { error })
 			throw new Error(error)
@@ -557,8 +600,15 @@ export const connectionsCreate: Handler<
 		delete (data as any).modelsSyncError
 		// ComfyUI's server facts are the server's to write (a duplicated
 		// row would carry another server's checks): `imageGen/comfy/serverCheck`.
-		if ((data as any).extraJson && typeof (data as any).extraJson === "object")
+		// The key's credit tier is likewise the server's
+		// (`connections/openRouterKey`).
+		if (
+			(data as any).extraJson &&
+			typeof (data as any).extraJson === "object"
+		) {
 			delete (data as any).extraJson.comfy
+			delete (data as any).extraJson[OPENROUTER_KEY_FACTS_KEY]
+		}
 		data.capabilities = {
 			resolved: resolveConnectionCapabilities(data)
 		}
@@ -645,7 +695,24 @@ export const connectionsUpdate: Handler<
 				emitToUser("connections:update:error", { error })
 				throw new Error(error)
 			}
-			if (await connectionNameTaken(desiredName, id)) {
+			const storedForName = await db.query.connections.findFirst({
+				where: (c, { eq }) => eq(c.id, id),
+				columns: { type: true, name: true }
+			})
+			if (
+				storedForName &&
+				LOCAL_ONNX_CONNECTION_NAME[storedForName.type] &&
+				desiredName !== (storedForName.name ?? "").trim()
+			) {
+				const error = `"${storedForName.name}" comes with Serene Pub and keeps its name.`
+				emitToUser("connections:update:error", { error })
+				throw new Error(error)
+			}
+			const nameType =
+				"type" in editable
+					? String(editable.type ?? "")
+					: storedForName?.type
+			if (await connectionNameTaken(desiredName, id, nameType)) {
 				const error = `A connection named "${desiredName}" already exists.`
 				emitToUser("connections:update:error", { error })
 				throw new Error(error)
@@ -677,6 +744,19 @@ export const connectionsUpdate: Handler<
 		})
 		const nextType =
 			typeof editable.type === "string" ? editable.type : stored?.type
+		// The two app-made local ONNX rows are one per type and Serene Pub's own
+		// (owner 2026-11-04): a row never becomes one, and one never becomes
+		// something else — create and delete refuse the same way.
+		if (
+			typeof editable.type === "string" &&
+			stored &&
+			editable.type !== stored.type &&
+			(onnxModalityOf(editable.type) || onnxModalityOf(stored.type))
+		) {
+			const error = "A local ONNX connection keeps its type: Serene Pub makes it, one per type."
+			emitToUser("connections:update:error", { error })
+			throw new Error(error)
+		}
 
 		// A second Ollama connection to a host is refused here as at create.
 		// ⚠ Only when the host CHANGES (or the row becomes Ollama). Installs that
@@ -718,16 +798,33 @@ export const connectionsUpdate: Handler<
 		// Server-owned facts under `extraJson.comfy` (`serverCheck.ts`) survive
 		// a save from a client's stale copy: the stored row's, never the form's.
 		if (updateData.extraJson && typeof updateData.extraJson === "object") {
-			const { comfy: _clientCopy, ...rest } = updateData.extraJson as Record<string, unknown>
-			const storedComfy = (
-				(
-					await db.query.connections.findFirst({
-						where: (c, { eq }) => eq(c.id, id),
-						columns: { extraJson: true }
-					})
-				)?.extraJson as Record<string, unknown> | undefined
-			)?.comfy
-			updateData.extraJson = storedComfy ? { ...rest, comfy: storedComfy } : rest
+			// `extraJson.openrouter` (the key's credit tier) too, except that a
+			// changed key drops it: the fact belonged to the old key.
+			const {
+				comfy: _clientCopy,
+				[OPENROUTER_KEY_FACTS_KEY]: _clientTier,
+				...rest
+			} = updateData.extraJson as Record<string, unknown>
+			const storedExtra = (
+				await db.query.connections.findFirst({
+					where: (c, { eq }) => eq(c.id, id),
+					columns: { extraJson: true }
+				})
+			)?.extraJson as Record<string, unknown> | undefined
+			const storedComfy = storedExtra?.comfy
+			const keyChanged =
+				decryptApiKeyField(storedExtra?.apiKey) !==
+				decryptApiKeyField((editable as any).extraJson?.apiKey)
+			const storedTier = keyChanged
+				? undefined
+				: storedExtra?.[OPENROUTER_KEY_FACTS_KEY]
+			updateData.extraJson = {
+				...rest,
+				...(storedComfy ? { comfy: storedComfy } : {}),
+				...(storedTier
+					? { [OPENROUTER_KEY_FACTS_KEY]: storedTier }
+					: {})
+			}
 		}
 		// The endpoint row carries no model — strip a legacy `model` field off
 		// the payload before the write, then promote it to a real model row.
@@ -989,6 +1086,22 @@ export const connectionsDelete: Handler<
 			)
 		}
 
+		// The two local ONNX rows come with Serene Pub and are not deleted;
+		// a person frees space by removing a model's files. They stay on
+		// every device (owner ★C-4, 2026-11-04): where the runtime can't load
+		// they read Unavailable, and their models' files can still be removed.
+		const doomed = await db.query.connections.findFirst({
+			where: (c, { eq }) => eq(c.id, params.id),
+			columns: { type: true, name: true }
+		})
+		if (doomed && onnxModalityOf(doomed.type)) {
+			// No `connections:delete:error` event type exists; "error" is
+			// the one the admin check above uses.
+			const error = `"${doomed.name}" comes with Serene Pub and can't be deleted. To free space, use Delete from disk on one of its models instead.`
+			emitToUser("error", { error })
+			throw new Error(error)
+		}
+
 		// No clear-on-delete dance. `connection_defaults.connection_id` is
 		// ON DELETE SET NULL, so deleting a connection releases every capability
 		// it held, in one statement, for capabilities this handler has never
@@ -1006,7 +1119,9 @@ export const connectionsDelete: Handler<
 		// has a consequence: the queue must stop and the model unload, rather
 		// than stay resident until its TTL (plan A10).
 		await withStarConsequences(db, () =>
-			db.delete(schema.connections).where(eq(schema.connections.id, params.id))
+			db
+				.delete(schema.connections)
+				.where(eq(schema.connections.id, params.id))
 		)
 		await emitToUser("connections:list", () => buildConnectionsList())
 		const res: Sockets.Connections.Delete.Response = { id: params.id }
@@ -1115,11 +1230,29 @@ export const connectionsSetDefault: Handler<
 			[params.capability]
 		)
 
+		// An image pair's sampling preset: swapped from what the model FILE
+		// says, or said to have stayed (`imageSamplingFamily.ts`). Before the
+		// reply, so the sentence rides in it; never a reason the write fails.
+		let samplingNote: string | null = null
+		if (params.id != null && params.capability === "text->image") {
+			try {
+				const { settleImageSamplingAfterUse } = await import(
+					"$lib/server/connections/imageSamplingFamily"
+				)
+				samplingNote = await settleImageSamplingAfterUse(db, params.capability, {
+					connectionId: params.id,
+					connectionModelId: params.modelId ?? null
+				})
+			} catch (e) {
+				console.warn("[connections:setDefault] sampling preset not settled:", e)
+			}
+		}
 		const res: Sockets.Connections.SetDefault.Response = {
 			ok: true,
 			capability: params.capability,
 			id: params.id,
-			modelId: params.id == null ? null : (params.modelId ?? null)
+			modelId: params.id == null ? null : (params.modelId ?? null),
+			...(samplingNote ? { samplingNote } : {})
 		}
 		emitToUser("connections:setDefault", res)
 
@@ -1283,12 +1416,19 @@ export const connectionsTest: Handler<
 						const { recordComfyTest } = await import(
 							"$lib/server/imageGen/comfy/serverCheck"
 						)
-						await recordComfyTest(db, params.connection.id, (result as any).extra)
+						await recordComfyTest(
+							db,
+							params.connection.id,
+							(result as any).extra
+						)
 					}
 					await syncConnectionModels(db, params.connection.id, {
 						models,
 						error: modelsRes.error ?? null
 					})
+					// OpenRouter: does this key's account have credit? Read
+					// before the emits so they carry the answer (never throws).
+					await recordOpenRouterKey(db, stored!)
 					await emitToUser("connections:models", () =>
 						connectionModelsView(params.connection.id!)
 					)
@@ -1300,7 +1440,8 @@ export const connectionsTest: Handler<
 				error = result.error || "Connection failed."
 			}
 			// The `/object_info` summary is the row's cache, never the reply's.
-			if ((result as any).extra?.comfy) delete (result as any).extra.comfy.objectInfo
+			if ((result as any).extra?.comfy)
+				delete (result as any).extra.comfy.objectInfo
 			const res: Sockets.Connections.Test.Response = {
 				ok: result.ok,
 				error: error || null,
@@ -1415,6 +1556,77 @@ export const connectionsRefreshModels: Handler<
 				connectionId: params.connection?.id
 			}
 			emitToUser("connections:refreshModels", res)
+			return res
+		}
+	}
+}
+
+/**
+ * 🚧 `models:refreshSpeech` — speech facts re-read for a saved connection's
+ * speaking models. Admin only (members never touch model plumbing). The speech
+ * store is imported lazily so adapters stay out of the socket-registration graph.
+ */
+export const modelsRefreshSpeech: Handler<
+	Sockets.Connections.RefreshSpeech.Params,
+	Sockets.Connections.RefreshSpeech.Response
+> = {
+	event: "models:refreshSpeech",
+	handler: async (socket, params, emitToUser) => {
+		if (!socket.user!.isAdmin) {
+			const msg =
+				"Access denied. Only admin users can refresh speech facts."
+			emitToUser("error", {
+				error: msg,
+				connectionId: params?.connectionId,
+				results: []
+			})
+			throw new Error(msg)
+		}
+		const connectionId = Number(params?.connectionId)
+		if (!Number.isInteger(connectionId)) {
+			const res: Sockets.Connections.RefreshSpeech.Response = {
+				connectionId,
+				results: [],
+				error: "Connection not found."
+			}
+			emitToUser("models:refreshSpeech", res)
+			return res
+		}
+		const rateLimitKey = `${socket.user!.id}:models:refreshSpeech`
+		if (loginRateLimit.isRateLimited(rateLimitKey)) {
+			const res: Sockets.Connections.RefreshSpeech.Response = {
+				connectionId,
+				results: [],
+				error: "Rate limited. Please wait a moment and try again."
+			}
+			emitToUser("models:refreshSpeech", res)
+			return res
+		}
+		loginRateLimit.recordFailedAttempt(rateLimitKey)
+		try {
+			const { refreshSpeechFacts } = await import(
+				"$lib/server/connectionAdapters/speech/speechFactsStore"
+			)
+			const results = await refreshSpeechFacts(db, connectionId, {
+				model: params.model
+			})
+			await emitToUser("connections:models", () =>
+				connectionModelsView(connectionId)
+			)
+			const res: Sockets.Connections.RefreshSpeech.Response = {
+				connectionId,
+				results
+			}
+			emitToUser("models:refreshSpeech", res)
+			return res
+		} catch (error: any) {
+			console.error("Refresh speech facts error:", error)
+			const res: Sockets.Connections.RefreshSpeech.Response = {
+				connectionId,
+				results: [],
+				error: "Failed to refresh speech facts."
+			}
+			emitToUser("models:refreshSpeech", res)
 			return res
 		}
 	}
@@ -1561,8 +1773,21 @@ export async function connectionModelsView(
 		type: endpoint.type,
 		preset: endpoint.preset ?? null,
 		modelsSync: modelsSyncView(endpoint),
-		models: rows.map((m) => modelRowView(endpoint, m, local.get(m.id)))
+		models: freeFirstWhenNoCredit(
+			endpoint,
+			rows.map((m) => modelRowView(endpoint, m, local.get(m.id)))
+		)
 	}
+}
+
+/** An OpenRouter key with no credit: the free models first, else as given. */
+function freeFirstWhenNoCredit(
+	endpoint: { extraJson?: unknown },
+	rows: Sockets.Connections.Models.ModelRow[]
+): Sockets.Connections.Models.ModelRow[] {
+	return openRouterKeyFactsOf(endpoint)?.freeTier
+		? freeModelsFirst(rows, isFreeModel)
+		: rows
 }
 
 /**
@@ -1581,6 +1806,8 @@ function modelRowView(
 ): Sockets.Connections.Models.ModelRow {
 	// Validated field by field rather than cast: see `readStoredFacts`.
 	const facts = readStoredFacts(m.facts)
+	// Speech facts ride beside the stored facts (lane B, S1); `readStoredFacts` drops them.
+	const speech = readSpeechFacts(m.facts)
 	return {
 		id: m.id,
 		connectionId: m.connectionId,
@@ -1601,6 +1828,7 @@ function modelRowView(
 		// Omitted entirely when the host said nothing, so a consumer branches on
 		// presence rather than on an empty object that reads like an answer.
 		...(facts ? { facts } : {}),
+		...(speech ? { speech } : {}),
 		...(local ? { local } : {}),
 		// Only where the runtime launches the model; absent everywhere else.
 		...(takesVisionProjector(endpoint.type)
@@ -1619,7 +1847,8 @@ function modelsSyncView(endpoint: {
 	return {
 		at: endpoint.modelsSyncedAt?.toISOString() ?? null,
 		error: endpoint.modelsSyncError ?? null,
-		...(typeof problem === "string" && problem ? { problem } : {})
+		...(typeof problem === "string" && problem ? { problem } : {}),
+		...(openRouterKeyFactsOf(endpoint)?.freeTier ? { freeTier: true } : {})
 	}
 }
 
@@ -1731,7 +1960,6 @@ function modelPayload(input: unknown): {
 		}
 	return { values }
 }
-
 
 /** A modality as a sentence names it: "chat", "embeddings". */
 const modalityWord = (modality: string): string =>
@@ -2052,7 +2280,8 @@ export const connectionsUpdateModel: Handler<
 		// the single column keeps its answer; an embedding or NER model
 		// keeps its one modality and states no sets.
 		if (values!.reads !== undefined || values!.writes !== undefined) {
-			const currentModality = (values!.modality as string | null | undefined) ?? row.modality
+			const currentModality =
+				(values!.modality as string | null | undefined) ?? row.modality
 			if (currentModality && SINGLE_MODALITIES.has(currentModality))
 				return fail(
 					`This model is for ${modalityWord(currentModality)} — one thing only, so it has nothing else to choose here.`
@@ -2091,7 +2320,9 @@ export const connectionsUpdateModel: Handler<
 			if (values!.writes !== undefined && filed !== row.modality)
 				values!.modality = filed
 			const refusal = await modalityChangeRefusal(params.id, row.id, {
-				modality: (values!.modality as string | null | undefined) ?? row.modality,
+				modality:
+					(values!.modality as string | null | undefined) ??
+					row.modality,
 				...nextFields
 			})
 			if (refusal) return fail(refusal)
@@ -2303,6 +2534,14 @@ export const connectionsSyncModels: Handler<
 	}
 }
 
+function portOf(url: string | null | undefined): string {
+	try {
+		return new URL(url ?? "").port
+	} catch {
+		return ""
+	}
+}
+
 /**
  * Which model servers are running on this machine right now, and the chat
  * models each lists — the setup wizard's detected-provider cards. See
@@ -2312,7 +2551,7 @@ export const connectionsSyncModels: Handler<
  * one does, so the wizard reuses it rather than creating a second (the server
  * refuses a second Ollama to one host). A KoboldCPP that a managed connection
  * already addresses is left out: that is Serene Pub's own process, and the
- * managed card is its door.
+ * managed card is its door. So is Serene Pub's own audio.cpp (same port).
  */
 export const connectionsDiscoverLocal: Handler<
 	Sockets.Connections.DiscoverLocal.Params,
@@ -2338,6 +2577,18 @@ export const connectionsDiscoverLocal: Handler<
 			if (
 				p.type === CONNECTION_TYPE.KOBOLDCPP &&
 				atHost.some((r) => CONNECTION_TYPE.isManagedKoboldCpp(r.type))
+			)
+				continue
+			// Likewise Serene Pub's own audio.cpp: its port is the settings
+			// port on this machine (loopback is spelled 127.0.0.1 there and
+			// localhost here, which `sameHost` deliberately does not equate).
+			if (
+				p.type === CONNECTION_TYPE.AUDIOCPP &&
+				rows.some(
+					(r) =>
+						CONNECTION_TYPE.isManagedAudioCpp(r.type) &&
+						portOf(r.baseUrl) === portOf(p.baseUrl)
+				)
 			)
 				continue
 			providers.push({
@@ -2368,6 +2619,7 @@ export function registerConnectionHandlers(
 	register(socket, afterModelChange(connectionsSetDefault), emitToUser)
 	register(socket, connectionsTest, emitToUser)
 	register(socket, connectionsRefreshModels, emitToUser)
+	register(socket, modelsRefreshSpeech, emitToUser)
 	register(socket, connectionsCapabilities, emitToUser)
 	register(socket, afterModelChange(connectionsSetCapability), emitToUser)
 	register(socket, connectionsScripts, emitToUser)

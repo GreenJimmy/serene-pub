@@ -9,8 +9,10 @@
  *
  * A module-level map rather than anything durable: a run only exists while this
  * process is running it, and a restart cancels every run by definition. The
- * `userId` rides along so a run can only be stopped by whoever started it — a run
- * id is unguessable, but unguessable is not an access rule.
+ * `userId` rides along so `cancel` stops a run only for whoever started it. Who
+ * else may stop one (a member a waiting reply, the owner an action) is the
+ * handler's rule, asked through `personMay` and carried out with `cancelAs` — a
+ * run id is unguessable, but unguessable is not an access rule.
  */
 
 import type { RunKind, StatusText } from "@serene-pub/sdk"
@@ -78,6 +80,17 @@ export interface RunHandle {
 	 */
 	action?: string
 	/**
+	 * 🚧 A **line-bound run** (speech polish, owner ruling 2026-10-29): work
+	 * on ONE settled line — speaking it (`core:spec/speak-message`) — shown
+	 * only on that line (its heading Stop, its strip's *Speaking…*). Its
+	 * frames say so (`RunStatusFrame.lineBound`, `RunProgress.lineBound`) and
+	 * carry no `reply`: it is never a waiting row, the turn line, the progress
+	 * card, the composer's Stop or the session list's status. ⚠ Not a kind:
+	 * the kind says what a Stop and the busy door read; this says where the
+	 * run is SHOWN.
+	 */
+	lineBound?: true
+	/**
 	 * The message row this run is filling, once it has one — a verb's row
 	 * from the start, a fresh turn's from the moment its placeholder commits
 	 * (`setLiveRow`). What `cancelSession` matches the released rows against.
@@ -111,6 +124,16 @@ const runs = new Map<string, RunHandle>()
 /** 🚧 The kind of a registered run in flight (sprint 2, G3); undefined when none is registered under the id (a preview, a test). */
 export function runKindOf(runId: string): RunKind | undefined {
 	return runs.get(runId)?.kind
+}
+
+/** The session a registered run is in; undefined when none is registered under the id or it has no session. */
+export function runSessionOf(runId: string): number | undefined {
+	return runs.get(runId)?.sessionId
+}
+
+/** 🚧 Is this registered run line-bound (`RunHandle.lineBound`)? False when none is registered under the id. */
+export function runLineBoundOf(runId: string): boolean {
+	return runs.get(runId)?.lineBound === true
 }
 
 /**
@@ -214,6 +237,7 @@ export function start(args: {
 	kind: RunKind
 	liveRow?: number
 	action?: string
+	lineBound?: true
 }): RunHandle {
 	// A repeated id means a client re-sent; the older run is the stale one.
 	// Its own reason, not the user-cancel one: nobody pressed anything, and a
@@ -243,6 +267,8 @@ export function start(args: {
  * `found: false` for a run that has already finished — that is not an error, it
  * is a cancel that arrived late, which is the normal outcome of pressing Cancel
  * just as the result lands.
+ *
+ * Allowed only for whoever started the run.
  */
 export function cancel(
 	runId: string,
@@ -303,6 +329,8 @@ export function statusesBySession(): Map<number, StatusText> {
 	const out = new Map<number, { status: StatusText; startedAt: number }>()
 	for (const handle of runs.values()) {
 		if (handle.sessionId === undefined || !handle.status) continue
+		// A line-bound run (speaking a line) is shown on its line only.
+		if (handle.lineBound) continue
 		const held = out.get(handle.sessionId)
 		if (!held || handle.startedAt > held.startedAt)
 			out.set(handle.sessionId, {

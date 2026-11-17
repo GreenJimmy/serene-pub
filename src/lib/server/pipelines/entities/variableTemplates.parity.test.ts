@@ -227,6 +227,33 @@ const OBJECT_CASES: Record<string, () => Array<[string, unknown]>> = {
 	]
 }
 
+/**
+ * 🚧 `core:var/earlier-scenes@1`'s shape: `{ name, summary }` each. Every
+ * entry carries both: the binding only ever hands over whole pairs, and the
+ * generic list cases below would hand it `description`s it drops.
+ */
+const earlierScenesCases: Array<[string, unknown]> = [
+	["an empty list", []],
+	["one entry", [{ name: "The Ford", summary: "They crossed at dawn." }]],
+	[
+		"quotes, angle brackets and braces",
+		[{ name: `She said "no" & <left>`, summary: "'quickly' & </br> {{user}}" }]
+	],
+	["newlines and tabs", [{ name: "A\tB", summary: "one\ntwo\tthree\r\nfour" }]],
+	["a non-BMP emoji", [{ name: "🜁", summary: "👩‍🚒 ash" }]],
+	["an empty summary", [{ name: "The Ford", summary: "" }]],
+	["an empty name", [{ name: "", summary: "Unnamed." }]],
+	[
+		"several entries",
+		[
+			{ name: "The Ford", summary: "one" },
+			{ name: "The Inn", summary: "two" },
+			{ name: "The Pass", summary: "three" }
+		]
+	],
+	["undefined", undefined]
+]
+
 const shapedCases = (key: string): Array<[string, unknown]> => {
 	const shared: Array<[string, unknown]> = [
 		["an empty list", []],
@@ -270,6 +297,7 @@ const shapedCases = (key: string): Array<[string, unknown]> => {
 		["undefined", undefined]
 	]
 	if (key === "characterLore") return characterLoreCases
+	if (key === "earlierScenes") return earlierScenesCases
 	if (key !== "characters") return shared
 	return [
 		...shared,
@@ -463,12 +491,16 @@ describe("the shipped set", () => {
 		// Automatic object layouts (`coreObjectLayouts`, 2026-09-27) ship a row too: `likenesses` (2026-10-12) is the first.
 		const { coreObjectLayouts } = await import("$lib/server/pipelines/entities/objectVariableLayouts")
 		const automaticKeys = coreObjectLayouts().flatMap((l) => Object.keys(getVariable(l.variableId as any)?.scope ?? {}))
+		// …and the catalogue's speech layouts (`inflectionTag`…), keyed by their own `key`.
+		const { SHIPPED_SPEECH_VARIABLE_LAYOUTS } = await import("@serene-pub/core-catalog")
+		const speechKeys = SHIPPED_SPEECH_VARIABLE_LAYOUTS.map((l) => l.key)
 		expect(Object.keys(renders).sort()).toEqual(
-			[...new Set([...SHIPPED_VARIABLE_TEMPLATES.map((t) => t.key), ...automaticKeys])].sort()
+			[...new Set([...SHIPPED_VARIABLE_TEMPLATES.map((t) => t.key), ...automaticKeys, ...speechKeys])].sort()
 		)
 		const byKey = new Map<string, { variableId: string }>(shippedByKey)
 		for (const l of coreObjectLayouts())
 			for (const k of Object.keys(getVariable(l.variableId as any)?.scope ?? {})) byKey.set(k, l)
+		for (const l of SHIPPED_SPEECH_VARIABLE_LAYOUTS) byKey.set(l.key, l)
 		for (const [key, variableId] of Object.entries(renders))
 			expect(byKey.get(key)?.variableId).toBe(variableId)
 	})
@@ -528,6 +560,7 @@ describe("a heading never appears above nothing", () => {
 			"characterLore",
 			"characters",
 			"currentDate",
+			"earlierScenes",
 			"history",
 			"instructions",
 			"personas",
@@ -675,6 +708,7 @@ describe("an explicit layout renders the declared shape and nothing else", () =>
 			"characterLore",
 			"characters",
 			"currentDate",
+			"earlierScenes",
 			"history",
 			"personas",
 			"relationshipsKnown",

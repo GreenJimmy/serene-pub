@@ -20,17 +20,19 @@
  * `appliesTo` (which owner kinds may hold a slot at all).
  */
 import { and, eq } from "drizzle-orm"
-import { getAttributeSlot, getRuleset, i18nText, rulesetAttributeSlots, rulesetSections, type SlotAppliesTo } from "@serene-pub/sdk"
+import { getAttributeSlot, getRuleset, i18nText, rulesetAttributeOwners, rulesetAttributeSlots, rulesetSections, type SlotAppliesTo } from "@serene-pub/sdk"
 import * as schema from "$lib/server/db/schema"
 import { castMemberKey } from "$lib/server/state/keys"
+import { memberFormOn } from "$lib/server/state/memberForm"
 import type { StateOwner } from "$lib/server/state/owners"
 
 /** The owner kinds a carry is switched for: the session layer's. */
 export const CARRY_OWNER_KINDS = ["session", "session_cast", "player_seat", "session_location"] as const
-export type CarryOwnerKind = (typeof CARRY_OWNER_KINDS)[number]
+export type CarryOwnerKind = (typeof CARRY_OWNER_KINDS)[number] | "seated_member"
 
+/** 🚧 ⏳ S4: `seated_member` (a character seat in member form) is a carry owner only once the flip is on (`memberForm.ts`). */
 export const isCarryOwner = (owner: { kind: string }): owner is StateOwner & { kind: CarryOwnerKind } =>
-	(CARRY_OWNER_KINDS as readonly string[]).includes(owner.kind)
+	(CARRY_OWNER_KINDS as readonly string[]).includes(owner.kind) || (owner.kind === "seated_member" && memberFormOn())
 
 /**
  * The key a holder's carries are filed under, as `state.configs` keys its
@@ -40,6 +42,7 @@ export function carryKeyOf(owner: { kind: string; id: number }): string {
 	if (owner.kind === "session") return "world"
 	if (owner.kind === "player_seat") return castMemberKey({ id: 0, playerSeatId: owner.id })
 	if (owner.kind === "session_location") return `location:${owner.id}`
+	if (owner.kind === "seated_member") return `seated_member:${owner.id}`
 	return String(owner.id)
 }
 
@@ -49,7 +52,7 @@ export interface CarryableAttribute {
 	rulesetId: string
 	attributeId: string
 	label: string
-	/** The owner kinds that carry it (`carriedBy`; default each character). */
+	/** The owner kinds that carry it (`owner`, ⏳ `carriedBy`; default each character). */
 	carriedBy: readonly SlotAppliesTo[]
 	/** Every holder carries it: never switched off. */
 	required: boolean
@@ -72,7 +75,7 @@ export function carryableAttributes(plays: readonly string[]): Map<string, Carry
 				rulesetId,
 				attributeId: a.id,
 				label: i18nText(a.name) ?? i18nText(getAttributeSlot(slotId)?.label) ?? a.id,
-				carriedBy: a.carriedBy?.length ? a.carriedBy : ["cast"],
+				carriedBy: rulesetAttributeOwners(a),
 				required: a.required === true
 			})
 		}

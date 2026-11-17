@@ -41,7 +41,7 @@ import {
  * so the door it opens is that connection's view.
  */
 export interface ModelManager {
-	panel: "ollama" | "koboldcpp"
+	panel: "ollama" | "koboldcpp" | "audiocpp"
 	label: string
 }
 
@@ -52,6 +52,8 @@ export function managerFor(
 	if (!type) return null
 	if (isKoboldCppManagedType(type))
 		return { panel: "koboldcpp", label: "KoboldCPP" }
+	if (type === CONNECTION_TYPE.AUDIOCPP_MANAGED)
+		return { panel: "audiocpp", label: "audio.cpp" }
 	if (
 		type === CONNECTION_TYPE.OLLAMA ||
 		type === CONNECTION_TYPE.OLLAMA_EMBEDDINGS
@@ -68,6 +70,18 @@ const LOCAL_ONNX_TYPES: readonly string[] = [
 /** Runs in this process off a catalogue and the local registry. */
 export function isLocalOnnxType(type: string | null | undefined): boolean {
 	return !!type && LOCAL_ONNX_TYPES.includes(type)
+}
+
+/**
+ * The two local ONNX connections come with Serene Pub: fixed name, no
+ * delete (a person removes a model's files instead), on every device. Where
+ * the runtime can't load, the row reads Unavailable and stays (owner
+ * decision C-4, 2026-11-04).
+ */
+export function connectionComesWithApp(
+	type: string | null | undefined
+): boolean {
+	return isLocalOnnxType(type)
 }
 
 /** Whether the sidebar offers a free-text Add on this endpoint. */
@@ -115,9 +129,7 @@ const SINGLE_MODEL_TYPES: readonly string[] = [
  * a new listing API hidden behind no tab — would leave its models
  * unselectable, which is the worse failure.
  */
-export function listsAvailableModels(
-	type: string | null | undefined
-): boolean {
+export function listsAvailableModels(type: string | null | undefined): boolean {
 	if (!type) return false
 	return !SINGLE_MODEL_TYPES.includes(type)
 }
@@ -232,6 +244,9 @@ export function rowAction(
 		if (ctx.kcppLoaded) return null
 		return { verb: "load", label: "Load" }
 	}
+	// audio.cpp's packages are got, enabled and removed in its own Models tab,
+	// and a connection model of it is never "loaded" from a list row.
+	if (kind === "audiocpp-managed") return null
 	// Ollama's models are the manager's, and an API's are the host's: there is
 	// nothing this list can do to either that is not already a door elsewhere.
 	return null

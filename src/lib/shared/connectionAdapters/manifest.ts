@@ -246,6 +246,8 @@ export const ADAPTER_MANIFEST: Record<string, AdapterManifestEntry> = {
 				 * compatible servers that answer the route. PROBED.
 				 */
 				"audio->text": { unproven: true, until: "none" },
+				/** 🚧 Speech: `POST {base}/audio/speech` (speech dialect). PROBED per model. */
+				"text->audio": { unproven: true, until: "none" },
 				json_object: "native",
 				json_schema: { unproven: true, until: "none" },
 				strict_schema: { unproven: true, until: "none" },
@@ -615,7 +617,10 @@ export const ADAPTER_MANIFEST: Record<string, AdapterManifestEntry> = {
 				// `POST /api/embed` on the same host (owner ruling 2026-09-25):
 				// one Ollama connection serves every modality the host has, so
 				// there is no separate `ollama-embeddings` type to file it under.
-				"text->embedding": "native"
+				"text->embedding": "native",
+				// 🚧 Phonon (>= 0.40.11): `/v1/audio/speech`. PROBED per model
+				// (`speech` in /api/show capabilities).
+				"text->audio": { unproven: true, until: "none" }
 			},
 			defaults: [
 				"text->text",
@@ -674,15 +679,15 @@ export const ADAPTER_MANIFEST: Record<string, AdapterManifestEntry> = {
 	 * `text->embedding` is declared again now that `KoboldCppEmbeddingAdapter`
 	 * implements `embedText` (2026-09-26).
 	 *
-	 * ⚠ `text->audio` and `audio->text` are gone. The endpoint really does
-	 * report both over `/api/extra/version` and `capabilitiesFromFlags` really
-	 * does still read them — but nothing implements `synthesizeSpeech` or
-	 * `transcribeAudio` anywhere in the app, so those were two capabilities
-	 * that could be switched on and never called. The probe's answers for them are now fetched, written to the
-	 * durable `probe.found`, and discarded by resolution: correct, and worth
-	 * knowing before it reads as a bug. Existing user overrides for them sit in
-	 * the column doing nothing until the matching action lands, at which point
-	 * the key returns with its probe answer already waiting.
+	 * ⚠ `audio->text` is not declared. The endpoint reports `transcribe` over
+	 * `/api/extra/version` and `capabilitiesFromFlags` reads it — but nothing
+	 * implements `transcribeAudio` against KoboldCPP, so it would be a
+	 * capability that could be switched on and never called. The probe's answer
+	 * is fetched, written to the durable `probe.found`, and discarded by
+	 * resolution: correct, and worth knowing before it reads as a bug. A user
+	 * override for it sits in the column doing nothing until the action lands,
+	 * at which point the key returns with its probe answer already waiting —
+	 * as `text->audio` did when speech landed (2026-10-31).
 	 */
 	[CONNECTION_TYPE.KOBOLDCPP]: {
 		id: CONNECTION_TYPE.KOBOLDCPP,
@@ -696,6 +701,10 @@ export const ADAPTER_MANIFEST: Record<string, AdapterManifestEntry> = {
 				// Which one is per MODEL — the listing names it, and the adapter
 				// refuses a response from any other (owner ruling 2026-09-26).
 				"text->embedding": { unproven: true, until: "none" },
+				// Probed (`tts` on /api/extra/version): whether a speech model is
+				// loaded is per-instance; `/v1/audio/speech` is spoken by
+				// `speech/profiles/koboldcpp.ts`.
+				"text->audio": { unproven: true, until: "none" },
 				grammar: "native",
 				tools: "emulated",
 				streaming: "native",
@@ -747,8 +756,8 @@ export const ADAPTER_MANIFEST: Record<string, AdapterManifestEntry> = {
 	/**
 	 * The same wire format, with the admin API assumed.
 	 *
-	 * `text->audio` and `audio->text` are gone for the same reason as on plain
-	 * KOBOLDCPP: no `synthesizeSpeech` or `transcribeAudio` exists to call.
+	 * `audio->text` is not declared, for the same reason as on plain
+	 * KOBOLDCPP: no `transcribeAudio` exists to call. `text->audio` is probed.
 	 *
 	 * `text->embedding` is native here and probed on plain KOBOLDCPP, because
 	 * this app decides what the managed process holds: the embedding adapter
@@ -784,7 +793,10 @@ export const ADAPTER_MANIFEST: Record<string, AdapterManifestEntry> = {
 				// embedding model never evicts the chat model. Per MODEL, like
 				// the other two: `capabilityRefusal` refuses it to a `text-gen`
 				// row, as it refuses chat to an `embeddings` one.
-				"text->embedding": "native"
+				"text->embedding": "native",
+				// The managed process loads a speech GGUF into koboldcpp's
+				// `--ttsmodel` slot; probed like the external type.
+				"text->audio": { unproven: true, until: "none" }
 			},
 			defaults: [
 				"text->text",
@@ -1093,6 +1105,39 @@ export const ADAPTER_MANIFEST: Record<string, AdapterManifestEntry> = {
 			defaults: ["text->image", "text+image->image"]
 		}
 	},
+	/** 🚧 ElevenLabs: speaks, natively, and does nothing else. */
+	[CONNECTION_TYPE.ELEVENLABS]: {
+		id: CONNECTION_TYPE.ELEVENLABS,
+		capabilities: {
+			supports: {
+				"text->audio": "native"
+			},
+			defaults: ["text->audio"]
+		}
+	},
+	/** 🚧 audio.cpp you run yourself: speaks and transcribes, natively (transcription: lane C's adapter). */
+	[CONNECTION_TYPE.AUDIOCPP]: {
+		id: CONNECTION_TYPE.AUDIOCPP,
+		capabilities: {
+			supports: {
+				"text->audio": "native",
+				"audio->text": "native"
+			},
+			defaults: ["text->audio"]
+		}
+	},
+	/** 🚧 audio.cpp, run by Serene Pub: speaks and transcribes, natively. */
+	[CONNECTION_TYPE.AUDIOCPP_MANAGED]: {
+		id: CONNECTION_TYPE.AUDIOCPP_MANAGED,
+		capabilities: {
+			supports: {
+				"text->audio": "native",
+				"audio->text": "native",
+				audio_streaming: "native"
+			},
+			defaults: ["text->audio", "audio->text"]
+		}
+	},
 
 
 	/**
@@ -1203,6 +1248,7 @@ export const PRESET_CAPABILITIES: Record<
 		"text+audio->text": true,
 		"text->text+audio": true,
 		"audio->text": true,
+		"text->audio": true,
 		/**
 		 * Chat only — a KNOWN TRUTH about the service, recorded at the layer that
 		 * can hold one.

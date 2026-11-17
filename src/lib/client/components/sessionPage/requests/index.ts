@@ -36,8 +36,28 @@ import { answerChangeSprite } from "./changeSprite"
 import { answerClearSceneImage, type SceneImagePins } from "./clearSceneImage"
 import { answerDecideProposal, type DecideProposalDeps } from "./decideProposal"
 import { answerDraft, type DraftDeps } from "./draft"
+import { answerFilePick } from "./filePick"
+import {
+	answerLibraryCharacters,
+	answerLibraryLorebooks,
+	answerLibrarySessions,
+	answerUpdateCharacter,
+	answerUpdateSession
+} from "./library"
+import { answerUserAnnex } from "./userAnnex"
+import {
+	answerCreateSession,
+	answerDeleteSession,
+	answerOpenSession,
+	answerOpenSessions
+} from "./navigation"
+import { answerFileSave } from "./fileSave"
 import { answerFireTurn, type FireTurnDeps } from "./fireTurn"
-import { answerForwardTurn, answerRewindTurn, type RewindTurnDeps } from "./rewindTurn"
+import {
+	answerForwardTurn,
+	answerRewindTurn,
+	type RewindTurnDeps
+} from "./rewindTurn"
 import { answerInspectRun, type InspectRunDeps } from "./inspectRun"
 import { answerMessages, type MessagesDeps } from "./messages"
 import { answerChannelLanes, type ChannelLanesDeps } from "./channelLanes"
@@ -46,6 +66,13 @@ import { answerOpenLore, type OpenLoreDeps } from "./openLore"
 import { answerPickTurn, type PickTurnDeps } from "./pickTurn"
 import { answerPromptDetails, type PromptDetailsDeps } from "./promptDetails"
 import { answerSend, type SendDeps } from "./send"
+import { answerShowChannel } from "./showChannel"
+import { answerShowLine } from "./showLine"
+import {
+	answerSessionScenario,
+	answerSetSessionScenario,
+	type SessionScenarioDeps
+} from "./sessionScenario"
 import { answerSessionEntries, type SessionEntriesRead } from "./sessionEntries"
 import { answerSessionImages } from "./sessionImages"
 import {
@@ -55,7 +82,10 @@ import {
 import { answerSetEntryMarks, type EntryMarksWrite } from "./setEntryMarks"
 import { answerSetSpriteSet, type SpriteSetWrite } from "./setSpriteSet"
 import { answerSetTieShown, type TieShownWrite } from "./setTieShown"
-import { answerSetAttributeCarry, type AttributeCarryWrite } from "./setAttributeCarry"
+import {
+	answerSetAttributeCarry,
+	type AttributeCarryWrite
+} from "./setAttributeCarry"
 import { answerSummarize, type SummarizeDeps } from "./summarize"
 import {
 	answerSceneClose,
@@ -84,14 +114,31 @@ import {
 } from "./startHistoryEntry"
 import { answerExtendGraph } from "./extendGraph"
 import { answerDecideSceneCue, type DecideSceneCueDeps } from "./decideSceneCue"
-import { answerSummarizeScenes, type SummarizeScenesDeps } from "./summarizeScenes"
+import {
+	answerSummarizeScenes,
+	type SummarizeScenesDeps
+} from "./summarizeScenes"
+import { answerCompileHistoryEntry, compileByDate } from "./compileHistoryEntry"
+import { useTypedSocket } from "$lib/client/sockets/loadSockets.client"
 import { answerSessionPlaces, type SessionPlacesRead } from "./sessionPlaces"
-import { answerCharacterImages, type CharacterGalleryRead } from "./characterImages"
+import {
+	answerCharacterImages,
+	type CharacterGalleryRead,
+	type MemberGalleryRead
+} from "./characterImages"
 import { answerStatTrail, type StatTrailRead } from "./statTrail"
 import { answerRoutineLog, type RoutineLogRead } from "./routineLog"
+import {
+	answerSessionRuns,
+	answerSessionRunSteps,
+	type RunReceiptRead,
+	type SessionRunsRead
+} from "./sessionRuns"
 import { answerSetChosenImage, type InstanceSettings } from "./setChosenImage"
 import { answerSetBackdrop, type BackdropWrite } from "./setBackdrop"
 import { answerSetOwnerFace, type OwnerFaceWrite } from "./setOwnerFace"
+import { answerShowHiddenStats } from "./showHiddenStats"
+import { setShowingHiddenStats } from "$lib/client/state/sessionState.svelte"
 import { answerGivePiece, type GiveWrite } from "./givePiece"
 import {
 	patchWidgetSettings,
@@ -100,6 +147,11 @@ import {
 } from "$lib/client/stores/widgetSettings.svelte"
 import { widgetSettingsSchema } from "$lib/shared/widgets/settings"
 import type { StoryClock } from "$lib/shared/lorebooks/storyDate"
+import { answerNotify } from "./notify"
+import {
+	answerSessionFullscreen,
+	type SessionFullscreenControl
+} from "./sessionFullscreen"
 
 /** Which widget asks — what a `WidgetRequestHandler` is handed beside the params. */
 type RequestFrom = Parameters<WidgetRequestHandler>[2]
@@ -134,8 +186,13 @@ export interface WidgetRequestDeps {
 	canControlMessage(msg: SelectSessionMessage): boolean
 
 	// ── Panels ──
+	/** The shell's panels context (navigation requests set its digest and open the Sessions view). */
+	panelsCtx(): PanelsCtx
+	/** The viewer's user id, null when unknown. */
+	viewerId(): number | null
 	castMemberOf: OpenCharacterDeps["castMemberOf"]
 	openCastMember: OpenCharacterDeps["openCastMember"]
+	openSeatMemberSheet: NonNullable<OpenCharacterDeps["openSeatMemberSheet"]>
 	openCharactersPanel: OpenCharacterDeps["openCharactersPanel"]
 	viewCharacter: OpenCharacterDeps["viewCharacter"]
 	showLore: OpenLoreDeps["showLore"]
@@ -232,10 +289,16 @@ export interface WidgetRequestDeps {
 	readSessionPlaces: SessionPlacesRead
 	/** 🚧 Scene Portraits (W6): one member's gallery (`characters:listGallery`). */
 	readCharacterGallery: CharacterGalleryRead
+	/** 🚧 A card-less member's gallery (`characters:listGallery { castMemberId }`). */
+	readMemberGallery?: MemberGalleryRead
 	/** 🚧 Stats (F2): one owner's stat trail (`sessions:statTrail`). */
 	readStatTrail: StatTrailRead
 	/** 🚧 What the session's routines did (`routine-log`, A7), from the server. */
 	readRoutineLog: RoutineLogRead
+	/** 🚧 The session's runs (`session-runs`, lay-R), from the server — an administrator's. */
+	readSessionRuns: SessionRunsRead
+	/** 🚧 One run's receipt (`session-run-steps`, lay-R), from the server — an administrator's. */
+	readRunReceipt: RunReceiptRead
 	/** 🚧 Backdrop: set or clear the session's backdrop (`sessions:setBackdrop`). */
 	writeBackdrop: BackdropWrite
 	/** 🚧 Stats (PLAN-sheet §12): set or clear a player seat's portrait (`state:setOwnerFace`). */
@@ -246,6 +309,12 @@ export interface WidgetRequestDeps {
 	writeTieShown: TieShownWrite
 	/** 🚧 Stats (RF fix 8): one of the rules' optional attributes carried or not (`state:setCarry`). */
 	writeCarry: AttributeCarryWrite
+	/** 🚧 The open session's full screen (SHAPES L1), or null with no session. */
+	fullscreen(): SessionFullscreenControl | null
+	/** The page's session scenario and whether the viewer owns it (`session-scenario`); absent where the page has none. */
+	readScenario?: SessionScenarioDeps["readScenario"]
+	/** Save the scenario (`set-session-scenario`); absent → the existing `sessions:update`. */
+	writeScenario?: SessionScenarioDeps["writeScenario"]
 }
 
 /**
@@ -291,6 +360,11 @@ const sceneBoundaryDeps = (d: WidgetRequestDeps): SceneBoundaryDeps => ({
 	mergeScene: d.mergeScene
 })
 
+const navDeps = (d: WidgetRequestDeps) => ({
+	panelsCtx: d.panelsCtx() as any,
+	viewerId: () => d.viewerId()
+})
+
 /** How the page answers one request kind. */
 type Answerer<K extends WidgetRequestKind> = (
 	params: WidgetRequests[K]["params"],
@@ -309,9 +383,7 @@ export const WIDGET_REQUEST_ANSWERS: {
 } = {
 	messages: (p, from, d) => answerMessages(p, d, from),
 	"channel-lanes": (p, from, d) => answerChannelLanes(p, d, from),
-	"open-character": (p, _from, d) => {
-		answerOpenCharacter(p, d)
-	},
+	"open-character": (p, _from, d) => answerOpenCharacter(p, d),
 	"view-avatar": (p, _from, d) => {
 		answerViewAvatar(p, d)
 	},
@@ -422,7 +494,11 @@ export const WIDGET_REQUEST_ANSWERS: {
 	// copy's own channels, into the page's log — never a page spent on others.
 	"load-older": (p, _from, d) => {
 		const asked = (p as { channels?: unknown } | undefined)?.channels
-		const channels = Array.isArray(asked) ? asked.filter((c): c is string => typeof c === "string" && !!c.trim()) : undefined
+		const channels = Array.isArray(asked)
+			? asked.filter(
+					(c): c is string => typeof c === "string" && !!c.trim()
+				)
+			: undefined
 		return d.loadOlderIn(channels?.length ? channels : undefined)
 	},
 	// Core's state widgets (R21): the viewer's own edit at the session
@@ -431,11 +507,14 @@ export const WIDGET_REQUEST_ANSWERS: {
 		answerSetAttributeValue(p, d.stateStore(), d.sessionId(), from),
 	// 🚧 Give to… (★4): ONE request; the host gives at once or files an
 	// offer, and its refusal is the asking widget's (R77).
-	"give-piece": (p, from, d) => answerGivePiece(p, d.sessionId(), d.writeGive, from),
+	"give-piece": (p, from, d) =>
+		answerGivePiece(p, d.sessionId(), d.writeGive, from),
 	// 🚧 A tie side shown or hidden (ties on the graph, screen 2): the holder's or the game master's.
-	"set-tie-shown": (p, from, d) => answerSetTieShown(p, d.sessionId(), d.writeTieShown, from),
+	"set-tie-shown": (p, from, d) =>
+		answerSetTieShown(p, d.sessionId(), d.writeTieShown, from),
 	// 🚧 RF fix 8: an optional attribute carried or not — the holder's or the session owner's.
-	"set-attribute-carry": (p, from, d) => answerSetAttributeCarry(p, d.sessionId(), d.writeCarry, from),
+	"set-attribute-carry": (p, from, d) =>
+		answerSetAttributeCarry(p, d.sessionId(), d.writeCarry, from),
 	// Core's scene portraits (R21): judged against the cast the widget was
 	// shown (R77 — offered only where allowed); the server's refusal is the
 	// asking widget's, not a toast.
@@ -462,10 +541,16 @@ export const WIDGET_REQUEST_ANSWERS: {
 		answerSetAuthorsNote(p, d.sessionId(), d.writeAuthorsNote),
 	// 🚧 Chronicle (W3): the session's story, read off what already exists
 	// — the clock's read, the book's history and lines, the page's scenes.
-	"history-entries": (p, _from, d) => answerHistoryEntries(p, chronicleReads(d)),
+	"history-entries": (p, _from, d) =>
+		answerHistoryEntries(p, chronicleReads(d)),
 	// Moved by the session's owner; the server judges it and the calendar.
 	"set-story-clock": (p, _from, d) =>
-		answerSetStoryClock(p, d.sessionId(), d.writeStoryClock, d.noteStoryClock),
+		answerSetStoryClock(
+			p,
+			d.sessionId(),
+			d.writeStoryClock,
+			d.noteStoryClock
+		),
 	// The lorebook's next date after the one the session reads now.
 	"start-history-entry": (p, _from, d) =>
 		answerStartHistoryEntry(p, {
@@ -479,13 +564,25 @@ export const WIDGET_REQUEST_ANSWERS: {
 	// 🚧 Live scenes (§5, §7, lane D): Chronicle's background summaries — a
 	// row's Summarize, Close and summarize, Summarize all (N).
 	"summarize-scenes": (p, _from, d) => answerSummarizeScenes(p, d),
+	// 🚧 ★S6-1: the Chronicle's per-day Compile — the by-date compile on the
+	// session's line, no window; its refusal is the asking widget's.
+	"compile-history-entry": (p, _from, d) =>
+		answerCompileHistoryEntry(p, {
+			...chronicleReads(d),
+			compileByDate: (ask) => compileByDate(useTypedSocket(), ask)
+		}),
 	// 🚧 Live scenes (§4, lane D): a scene cue's Yes / Not here; the
 	// server's refusal is the asking widget's (R77).
 	"decide-scene-cue": (p, _from, d) => answerDecideSceneCue(p, d),
 	// 🚧 Places (W4): the session's places and the ways between them, as
 	// the server reads the session's book; who stands where is the widget's.
 	"session-places": (p, _from, d) =>
-		answerSessionPlaces(p, d.sessionId(), d.readSessionPlaces, d.ownBookId?.() ?? null),
+		answerSessionPlaces(
+			p,
+			d.sessionId(),
+			d.readSessionPlaces,
+			d.ownBookId?.() ?? null
+		),
 	// 🚧 Scene Portraits (W6): a page of a session member's gallery — only
 	// a member of the cast the page projects.
 	"character-images": (p, _from, d) => answerCharacterImages(p, d),
@@ -494,7 +591,22 @@ export const WIDGET_REQUEST_ANSWERS: {
 	"stat-trail": (p, _from, d) =>
 		answerStatTrail(p, d.sessionId(), d.readStatTrail),
 	// 🚧 While you were away (A7, R23): what the session's routines did.
-	"routine-log": (p, _from, d) => answerRoutineLog(p, d.sessionId(), d.readRoutineLog),
+	"routine-log": (p, _from, d) =>
+		answerRoutineLog(p, d.sessionId(), d.readRoutineLog),
+	// 🚧 Runs (lay-R, owner 2026-11-06): pipeline history and debugging, admins only.
+	"session-runs": (p, _from, d) =>
+		answerSessionRuns(p, {
+			isAdmin: d.isAdmin(),
+			sessionId: d.sessionId(),
+			contextDebugging: d.contextDebugging(),
+			findMessage: d.findMessage,
+			read: d.readSessionRuns
+		}),
+	"session-run-steps": (p, _from, d) =>
+		answerSessionRunSteps(p, {
+			isAdmin: d.isAdmin(),
+			read: d.readRunReceipt
+		}),
 	// 🚧 Scene Portraits (F2): the ASKING instance's own settings — the
 	// wire's `from.widgetId` is the instance its panel mounted.
 	"set-chosen-image": (p, from, d) => {
@@ -511,9 +623,61 @@ export const WIDGET_REQUEST_ANSWERS: {
 	// the server judges who may, and its refusal is the widget's.
 	"set-owner-face": (p, _from, d) =>
 		answerSetOwnerFace(p, d.sessionId(), d.writeOwnerFace),
+	// 🚧 Stats (*Show hidden stats*): the viewer reads their own AI seat's holder-only
+	// values; the store re-reads, and the host drops a seat they did not seat.
+	"show-hidden-stats": (p) => answerShowHiddenStats(p, setShowingHiddenStats),
 	// 🚧 Backdrop (D3): the session's generated pictures, for the chooser's
 	// *From this session* — the Album's `generated` source over a `messages` page.
-	"session-images": (p, _from, d) => answerSessionImages(p, d)
+	"session-images": (p, _from, d) => answerSessionImages(p, d),
+	// 🚧 M0 (SHAPES L12 Seams): declared in the SDK, answered by lane P4;
+	// until then the page refuses both, and the refusal is the asking widget's (R77).
+	"file-pick": (p, from) => answerFilePick(p, from),
+	"file-save": (p, from) => answerFileSave(p, from),
+	// 🚧 M0 (SHAPES L1, L6): declared in the SDK, answered by lanes U2
+	// (full screen) and U3 (the one toaster); until then the page refuses both.
+	"session-fullscreen": (p, _from, d) =>
+		answerSessionFullscreen(p, d.fullscreen()),
+	notify: (p, from, d) => answerNotify(p, from, d.sessionId()),
+	"show-channel": (p, from) => answerShowChannel(p, from),
+	"show-line": (p, _from, d) => answerShowLine(p, d.sessionId()),
+	"session-scenario": (_p, _from, d) =>
+		answerSessionScenario({ readScenario: d.readScenario }),
+	"set-session-scenario": (p, _from, d) =>
+		answerSetSessionScenario(p, d.sessionId(), {
+			readScenario: d.readScenario,
+			writeScenario:
+				d.writeScenario ??
+				((id, scenario) =>
+					useTypedSocket().emit("sessions:update", {
+						session: {
+							id,
+							scenario
+						} as Sockets.Sessions.Update.Params["session"]
+					}))
+		}),
+	// 🚧 M2b: the `ui` API's navigation requests and the `applet` API's library requests — declared in the SDK, the
+	// client half wired (the front-end API gate in the widget wire); the app answers them from M2c. Until then each is
+	// refused in words, and the refusal is the asking widget's (R77).
+	"create-session": (p, from, d) => answerCreateSession(p, from, navDeps(d)),
+	"open-session": (p, from, d) => answerOpenSession(p, from, navDeps(d)),
+	"open-sessions": (p, from, d) => answerOpenSessions(p, from, navDeps(d)),
+	"delete-session": (p, from, d) => answerDeleteSession(p, from, navDeps(d)),
+	// 🚧 M2c: the library requests over S's `plugins:*` handlers (briefs/m2-S-to-U.md §7). Only a mount without a
+	// session holds the applet API, so these rows are reached from the applet launcher (`routes/apps/[pluginId]`).
+	"library-characters": (p, from) => answerLibraryCharacters(p, from),
+	"update-character": (p, from) => answerUpdateCharacter(p, from),
+	"library-lorebooks": (p, from) => answerLibraryLorebooks(p, from),
+	"library-sessions": (p, from) => answerLibrarySessions(p, from),
+	"update-session": (p, from) => answerUpdateSession(p, from),
+	"user-annex": (p, from) => answerUserAnnex(p, from),
+	"plugin-storage": () => notYet("plugin-storage")
+}
+
+/** 🚧 M2b: a request kind the SDK declares and the app does not answer yet, refused in words. */
+function notYet(kind: WidgetRequestKind): never {
+	throw new Error(
+		`'${kind}' is not available yet: Serene Pub answers it in a later update`
+	)
 }
 
 /**

@@ -19,6 +19,7 @@
  * Pure, so the modal, the fire and the clear are tested without a page.
  */
 import { parseSlashCommand, slashArgumentRefusal } from "@serene-pub/core-catalog/conversation"
+import { castEntryOf, type CastById } from "./projections/seatIdentity"
 import type { ListedCollects } from "$lib/shared/actions/collects"
 import { NARRATE_ACTION } from "$lib/shared/actions/identity"
 
@@ -37,7 +38,10 @@ export interface Collected {
  * and the press has not already supplied it. An `argument` — S2's slash
  * argument — supplies the text, so a text-only action fires directly with
  * it; an action that also collects recipients still opens the modal (an
- * argument cannot carry who). A bare press always opens it.
+ * argument cannot carry who). A press with no argument slot (a chip, a
+ * menu) always opens it. An EMPTY argument is a command typed in full with
+ * nothing after it (`/room`, 2026-11-04): an optional text fires without
+ * any; a required one still asks.
  */
 export function opensModal(
 	action: { collects?: ListedCollects },
@@ -47,7 +51,9 @@ export function opensModal(
 	if (!c || (!c.text && !c.recipients && !c.clockStep)) return false
 	// An argument cannot carry who, nor how much time: the stepper asks.
 	if (c.recipients || c.clockStep) return true
-	return !argument?.trim()
+	if (argument === undefined) return true
+	if (argument.trim()) return false
+	return c.text?.need === "required"
 }
 
 /**
@@ -77,6 +83,8 @@ export function routePress(
 	pressedAs?: string
 ): PressRoute {
 	const text = supplied?.text?.trim() || null
+	// The press carried an argument slot (a slash command), even if empty.
+	const typed = supplied?.text !== undefined
 	if (text && !action?.collects?.text)
 		return {
 			route: "refuse",
@@ -87,7 +95,8 @@ export function routePress(
 	const collects = action?.collects
 	if (!collects || (!collects.text && !collects.recipients && !collects.clockStep))
 		return { route: "plain" }
-	if (opensModal({ collects }, text ?? undefined)) return { route: "modal", initialText: text ?? "" }
+	if (opensModal({ collects }, text ?? (typed ? "" : undefined)))
+		return { route: "modal", initialText: text ?? "" }
 	return { route: "fire", collected: collectedFire(collects, { ...supplied, ...(text ? { text } : {}) }) }
 }
 
@@ -95,13 +104,22 @@ export function routePress(
  * Chat's Narrate with its text already supplied (genre uplift C2,
  * 2026-09-29): `/narrate the storm breaks` names the world narrator and says
  * what should happen, so it fires at once with that direction rather than
- * opening the narrator modal, whose first step is *who speaks*. The text to
- * fire with, or null — any other press of the narrator's two actions opens
- * the modal, as the chip's does.
+ * opening the narrator modal, whose first step is *who speaks*. A bare
+ * `/narrator` (2026-11-04) also names who speaks — the narrator — and asks
+ * nothing more, so it fires with no direction: the empty string. Null means
+ * the modal: a chip's or a menu's press, as before.
  */
-export function narrateDirectly(identity: string | null, route: PressRoute): string | null {
-	if (identity !== NARRATE_ACTION || route.route !== "fire") return null
-	return route.collected.text || null
+export function narrateDirectly(
+	identity: string | null,
+	route: PressRoute,
+	supplied?: { text?: string }
+): string | null {
+	if (identity !== NARRATE_ACTION) return null
+	// A fire with no text is the bare name typed (an optional text declared,
+	// nothing after it): the narrator with no direction, never the modal.
+	if (route.route === "fire") return route.collected.text ?? ""
+	if (route.route === "plain" && supplied?.text !== undefined) return ""
+	return null
 }
 
 /** What the narrator modal fires (`sessions:fireNarratorResponse`'s text and speaker). */
@@ -224,13 +242,14 @@ export function createNarrations(deps: NarrationDeps): Narrations {
 		directed(instructions, fromDraft) {
 			const sessionId = deps.sessionId()
 			// The draft goes with the press (note 31): spent now, given back
-			// if the answer says it did not land.
+			// if the answer says it did not land. A bare `/narrator` already
+			// left the composer and holds no text: nothing to spend.
 			const draft = deps.draft()
-			if (fromDraft && draftHolds(instructions, draft)) {
+			if (instructions && fromDraft && draftHolds(instructions, draft)) {
 				pending.push({ sessionId, from: "draft", draft })
 				deps.writeDraft("")
 			} else pending.push({ sessionId, from: "invoke" })
-			deps.send({ sessionId, instructions })
+			deps.send({ sessionId, ...(instructions ? { instructions } : {}) })
 		},
 		modal(request) {
 			const sessionId = deps.sessionId()
@@ -321,17 +340,17 @@ export interface CollectMember {
 
 /**
  * What `overwrites` holds for one cast member now, from the session state as
- * the page holds it (`state.cast.byId[<characterId>][<slot key>]`): a
+ * the page holds it (the `state.cast.byId` entry the seat's ref names, `[<slot key>]`): a
  * non-empty string, else nothing.
  */
 export function holdsOf(
 	state: { cast?: Record<string, unknown> } | null | undefined,
 	slotKey: string | undefined,
-	characterId: number
+	ref: string
 ): string | undefined {
 	if (!slotKey) return undefined
-	const byId = (state?.cast as { byId?: Record<string, Record<string, unknown>> } | undefined)?.byId
-	const value = byId?.[String(characterId)]?.[slotKey]
+	const byId = (state?.cast as { byId?: CastById } | undefined)?.byId
+	const value = castEntryOf(byId, ref)?.[slotKey]
 	return typeof value === "string" && value.trim() ? value : undefined
 }
 
@@ -454,4 +473,59 @@ export interface DraftWrite {
 /** The next write after `last`: `content`, under a new number. */
 export function nextDraftWrite(last: DraftWrite, content: string): DraftWrite {
 	return { content, write: last.write + 1 }
+}
+
+/**
+ * The last answer a collected text remembered for this key (`remember:
+ * 'session'`): a per-viewer convenience, so every storage access is guarded
+ * and a failure reads as nothing remembered.
+ */
+export function readRemembered(key: string): string {
+	if (!key) return ""
+	try {
+		return globalThis.localStorage?.getItem(key) ?? ""
+	} catch {
+		return ""
+	}
+}
+
+/** Remember a collected text's answer under its key; a failure is silent. */
+export function writeRemembered(key: string, value: string): void {
+	if (!key || !value.trim()) return
+	try {
+		globalThis.localStorage?.setItem(key, value.trim())
+	} catch {
+		/* private window or blocked storage: the answer is simply not kept */
+	}
+}
+
+/**
+ * A message excerpt made fit for a quoted preview: emphasis markers dropped,
+ * whitespace collapsed, quote characters trimmed from both ends (the
+ * template brings its own), an ellipsis kept.
+ */
+export function cleanSubject(subject: string): string {
+	const QUOTES = "\"'\u201C\u201D\u2018\u2019\u00AB\u00BB`"
+	const lead = new RegExp(`^[\\s${QUOTES}]+`)
+	const trail = new RegExp(`[\\s${QUOTES}]+$`)
+	return subject
+		.replace(/[*_]+/g, "")
+		.replace(/\s+/g, " ")
+		.replace(lead, "")
+		.replace(/(…|\.\.\.)$/, "\u0001")
+		.replace(trail, "")
+		.replace("\u0001", "…")
+		.replace(trail, "")
+}
+
+/**
+ * The one-line preview of a declared `preview` template: `{subject}` is the
+ * pressed message's first words, `{value}` the box's text. Empty when either
+ * is missing, so nothing half-filled is ever drawn.
+ */
+export function previewLine(template: string | undefined, subject: string, value: string): string {
+	const v = value.trim()
+	if (!template || !subject.trim() || !v) return ""
+	const clean = cleanSubject(subject)
+	return clean ? template.split("{subject}").join(clean).split("{value}").join(v) : ""
 }

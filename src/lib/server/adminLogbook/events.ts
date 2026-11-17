@@ -790,27 +790,54 @@ export const LOGBOOK_EVENTS: Record<string, LogbookEventSpec> = {
 		snapshot: byName(schema.pipelineContextTemplates),
 		when: pubScope
 	},
-	"pipelines:cloneVariableTemplate": {
+	/* Variable layouts (PLAN-variable-layouts 2026-11-10). The per-step picker
+	 * verbs (`pipelines:cloneVariableTemplate` · `update…` · `delete…`) are
+	 * retired; a layout row is written through the library verbs below. */
+	"pipelines:librarySetPubLayout": {
 		objectType: "variable-template",
-		action: "add",
-		idFromResult: "templateId",
-		snapshot: byName(schema.pipelineVariableTemplates),
-		label: (p) => p?.name,
-		when: pubScope
+		action: "change",
+		id: (p) => p?.templateId ?? p?.variableId,
+		label: (p) => p?.variableId,
+		fields: ["variableId", "templateId"],
+		verb: (p) =>
+			p?.templateId == null
+				? `Put${q(p?.variableId)} back on its default layout`
+				: `Chose the pub's layout for${q(p?.variableId)}`
 	},
-	"pipelines:updateVariableTemplate": {
+	"pipelines:stampVariableTemplateReference": {
 		objectType: "variable-template",
 		action: "change",
 		id: (p) => p?.templateId,
 		snapshot: byName(schema.pipelineVariableTemplates),
-		when: pubScope
+		fields: ["ownerSlug"],
+		verb: () => "Gave it a layout reference"
 	},
-	"pipelines:deleteVariableTemplate": {
-		objectType: "variable-template",
-		action: "delete",
-		id: (p) => p?.templateId,
-		snapshot: byName(schema.pipelineVariableTemplates),
-		when: pubScope
+	"pipelines:setPresetVariableLayout": {
+		objectType: "session-preset",
+		action: "change",
+		id: (p) => p?.presetId,
+		snapshot: byName(schema.sessionPresets),
+		fields: ["variableId", "reference"],
+		verb: (p) =>
+			p?.reference == null
+				? `Removed its layout for${q(p?.variableId)}`
+				: `Chose layout${q(p?.reference)} for${q(p?.variableId)}`
+	},
+	"pipelines:clearLeftoverPick": {
+		objectType: "pipeline",
+		action: "change",
+		id: (p) => p?.slug,
+		label: (p) => p?.slug,
+		fields: ["nodeKey", "slot", "key"],
+		verb: (p) => `Removed a leftover layout pick${q(p?.key)}`
+	},
+	"pipelines:moveLeftoversIntoTemplate": {
+		objectType: "pipeline",
+		action: "change",
+		id: (p) => p?.slug,
+		label: (p) => p?.slug,
+		fields: ["nodeKey", "slot"],
+		verb: () => "Moved leftover layout picks into its context template"
 	},
 	// The library's template verbs carry `kind`; the record's object type
 	// follows it (see `resolveObjectType`).
@@ -960,6 +987,33 @@ export const LOGBOOK_EVENTS: Record<string, LogbookEventSpec> = {
 		action: "change",
 		id: (p) => p?.pluginId,
 		snapshot: pluginSnap
+	},
+	// 🚧 (M2c) An applet frame changed a character the plugin provided. The
+	// logbook records an admin actor only, which is right here: a provided
+	// row belongs to the admin who switched the plugin on.
+	"appletApi:updateCharacter": {
+		objectType: "plugin",
+		action: "change",
+		id: (p) => p?.pluginId,
+		snapshot: async (db, _id, p) => {
+			const n = Number(p?.characterId)
+			if (!Number.isSafeInteger(n)) return null
+			const [row] = await (db as any)
+				.select({ name: schema.characters.name })
+				.from(schema.characters)
+				.where(eq(schema.characters.id, n))
+				.limit(1)
+			return row ? { label: row.name, fields: {} } : null
+		},
+		fields: [
+			"name",
+			"nickname",
+			"description",
+			"personality",
+			"scenario",
+			"firstMessage"
+		],
+		verb: (p, label) => `${p?.pluginId} changed its character '${label}'`
 	},
 	"plugins:setSettings": {
 		objectType: "plugin",
